@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 
+import os
 import io
 import base64
 import pickle
@@ -8,12 +9,20 @@ import plotly.express as px
 
 from dash import Dash
 from dash import dash_table
-from dash import dcc, html, callback
+from dash import dcc, html
+from dash import callback
 from dash import Input, Output, State
+
+from flask_caching import Cache
 
 app = Dash(__name__)
 
 server = app.server
+
+cache = Cache(server, config={
+    'CACHE_TYPE': 'filesystem',
+    'CACHE_DIR': 'cache'
+})
 
 FONT_STYLE = {'fontFamily': 'monospace'}
 UPLOAD_STYLE = {
@@ -74,6 +83,7 @@ app.layout = html.Div([
     Input('upload-data', 'contents'),
     State('upload-data', 'filename')
 )
+@cache.memoize(timeout=3600)
 def upload_data(contents, filename):
     if contents is None:
         return {}, 'Upload A CSV'
@@ -128,6 +138,7 @@ def upload_data(contents, filename):
     Input('stored-data', 'data'),
     prevent_initial_call=True
 )
+@cache.memoize(timeout=3600)
 def update_dropdown(serialized_data):
     if serialized_data:
         data = pickle.loads(base64.b64decode(serialized_data))
@@ -141,6 +152,7 @@ def update_dropdown(serialized_data):
     Input('manhattan-plot', 'clickData'),
     State('sequence-dropdown', 'value')
 )
+@cache.memoize(timeout=3600)
 def update_selection(click_data, selected):
     if click_data is None:
         return selected
@@ -162,6 +174,7 @@ def update_selection(click_data, selected):
     Input('sequence-dropdown', 'value'),
     prevent_initial_call=True
 )
+@cache.memoize(timeout=3600)
 def update_graphand_table(serialized_data, y_column, scale, selected):
     if not serialized_data:
         return {}, []
@@ -198,7 +211,7 @@ def update_graphand_table(serialized_data, y_column, scale, selected):
 
     # make figure
     hover_data = {'Legend': False, 'seq_origin': True, 'GroupID': True, 'Position': True, 'sequence': True, 'Input_CPM': True}
-    fig = px.scatter(data, y=plot_column, color='Legend', hover_name='Legend', hover_data=hover_data, height=500, render_mode='webgl')
+    fig = px.scatter(data, y=plot_column, color='Legend', hover_name='Legend', hover_data=hover_data, height=500, render_mode='pointcloud')
     for trace in fig.data:
         if trace.name == 'parent':
             trace.marker.color = 'black'
