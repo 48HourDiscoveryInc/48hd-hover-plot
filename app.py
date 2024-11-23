@@ -1,9 +1,12 @@
 import numpy as np
 import pandas as pd
 
+import plotly.express as px
+
 import io
 import base64
-import plotly.express as px
+import pickle
+from flask_caching import Cache
 
 from dash import Dash
 from dash import dash_table
@@ -99,12 +102,25 @@ def upload_data(contents, filename):
         parent_idx = parent_data[parent_data['Position'] == '0Z'].index.tolist()
         data['Legend'] = data['seq_origin'].copy()
         data.loc[parent_idx, 'Legend'] = 'parent'
-        
+
         # format the data
         data = data[required_columns + fc_columns + ['Legend']]
         data = data.sort_values(['seq_origin', 'GroupID', 'Position']).reset_index(drop=True)
-        # columns = [{'name': i, 'id': i} for i in data.columns]
-        return data.to_dict('records'), f'📄 {filename}'
+
+        # change datatypes to categorical
+        data['GroupID'] = data['GroupID'].astype('category')
+        data['Position'] = data['Position'].astype('category')
+        data['seq_origin'] = data['seq_origin'].astype('category')
+        data['sequence'] = data['sequence'].astype('category')
+        data['Legend'] = data['Legend'].astype('category')
+        data['Legend'] = data['Legend'].cat.add_categories(['selection'])
+        for column in fc_columns + ['Input_CPM']:
+            data[column] = pd.to_numeric(data[column], downcast='float')
+
+        # serialize the DataFrame
+        serialized_data = base64.b64encode(pickle.dumps(data)).decode('utf-8')
+
+        return serialized_data, f'📄 {filename}'
     return {}, html.Label(f'Error reading {filename}', style=ERROR_STYLE)
 
 @callback(
@@ -113,9 +129,9 @@ def upload_data(contents, filename):
     Output('sequence-dropdown', 'options'),
     Input('stored-data', 'data')
 )
-def update_dropdown(data):
-    data = pd.DataFrame(data)
-    if not data.empty:
+def update_dropdown(serialized_data):
+    if serialized_data:
+        data = pickle.loads(base64.b64decode(serialized_data))
         fc_columns = [column for column in data.columns if 'FC' in column]
         sequences = sorted(data.sequence.unique())
         return fc_columns, fc_columns[0], sequences
@@ -143,9 +159,9 @@ def update_selection(click_data, selected):
     Input('stored-data', 'data'),
     Input('sequence-dropdown', 'value')
 )
-def update_table(data, selected):
-    data = pd.DataFrame(data)
-    if not data.empty and selected is not None:
+def update_table(serialized_data, selected):
+    if serialized_data and selected is not None:
+        data = pickle.loads(base64.b64decode(serialized_data))
         selection_data = data[data['sequence'].isin(selected)]
         return selection_data.drop('Legend', axis=1).to_dict('records')
     return []
@@ -157,9 +173,9 @@ def update_table(data, selected):
     Input('scale-dropdown', 'value'),
     Input('sequence-dropdown', 'value')
 )
-def update_graph(data, y_column, scale, selected):
-    data = pd.DataFrame(data)
-    if not data.empty:
+def update_graph(serialized_data, y_column, scale, selected):
+    if serialized_data:
+        data = pickle.loads(base64.b64decode(serialized_data))
 
         if scale == 'Square Root':
             plot_column = f'{y_column} (sqrt)'
