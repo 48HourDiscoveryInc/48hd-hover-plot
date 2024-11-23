@@ -164,55 +164,97 @@ def update_table(serialized_data, selected):
         return selection_data.drop('Legend', axis=1).to_dict('records')
     return []
 
+
 @callback(
     Output('manhattan-plot', 'figure'),
     Input('stored-data', 'data'),
     Input('column-dropdown', 'value'),
     Input('scale-dropdown', 'value'),
-    Input('sequence-dropdown', 'value')
+    Input('sequence-dropdown', 'value'),
+    State('manhattan-plot', 'figure')
 )
-def update_graph(serialized_data, y_column, scale, selected):
-    if serialized_data:
-        data = pickle.loads(base64.b64decode(serialized_data))
+def update_graph_new(serialized_data, y_column, scale, selected, current_fig):
+    if not serialized_data or not y_column:
+        return {}
+    data = pickle.loads(base64.b64decode(serialized_data))
+    if scale == 'Square Root':
+        plot_column = f'{y_column} (sqrt)'
+        data[plot_column] = data[y_column].apply(np.sqrt)
+    elif scale == 'Log10':
+        plot_column = f'{y_column} (log10)'
+        data[plot_column] = data[y_column].apply(np.log10)
+    else:
+        plot_column = y_column
 
-        if scale == 'Square Root':
-            plot_column = f'{y_column} (sqrt)'
-            data[plot_column] = data[y_column].apply(np.sqrt)
-        elif scale == 'Log10':
-            plot_column = f'{y_column} (log10)'
-            data[plot_column] = data[y_column].apply(np.log10)
-        else:
-            plot_column = y_column
+    # when figure already exists
 
-        # bring parents to the front
-        parent_data = data[data['Legend'] == 'parent']
-        not_parent_data = data[data['Legend'] != 'parent']
-        data = pd.concat([not_parent_data, parent_data])
+    # make figure
+    hover_data = {'Legend': False, 'seq_origin': True, 'GroupID': True, 'Position': True, 'sequence': True, 'Input_CPM': True}
+    fig = px.scatter(data, y=plot_column, color='Legend', hover_name='Legend', hover_data=hover_data, height=500)
+    for trace in fig.data:
+        if trace.name == 'parent':
+            trace.marker.color = 'black'
+        trace.marker.size = 5
+    return fig
 
-        if selected is not None:
-            selected_idx = data[data['sequence'].isin(selected)].index
-            data.loc[selected_idx, 'Legend'] = 'selection'
 
-        # bring selected to the front
-        select_data = data[data['Legend'] == 'selection']
-        not_select_data = data[data['Legend'] != 'selection']
-        data = pd.concat([not_select_data, select_data])
 
-        hover_data = {'Legend': False, 'seq_origin': True, 'GroupID': True, 'Position': True, 'sequence': True, 'Input_CPM': True}
-        fig = px.scatter(data, y=plot_column, color='Legend', hover_name='Legend', hover_data=hover_data, height=500)
+# @callback(
+#     Output('manhattan-plot', 'figure'),
+#     Input('stored-data', 'data'),
+#     Input('column-dropdown', 'value'),
+#     Input('scale-dropdown', 'value'),
+#     Input('sequence-dropdown', 'value'),
+#     State('manhattan-plot', 'figure')
+# )
+# def update_graph(serialized_data, y_column, scale, selected, current_fig):
+#     if not serialized_data or not y_column:
+#         return {}
+#     data = pickle.loads(base64.b64decode(serialized_data))
 
-        for trace in fig.data:
-            if trace.name == 'parent':
-                trace.marker.color = 'black'
-                trace.marker.size = 5
-            elif trace.name == 'selection':
-                trace.marker.color = 'red'
-                trace.marker.line = {'color': 'black', 'width': 2}
-                trace.marker.size = 8
-            else:
-                trace.marker.size = 5
-        return fig
-    return {}
+#     if scale == 'Square Root':
+#         plot_column = f'{y_column} (sqrt)'
+#         data[plot_column] = data[y_column].apply(np.sqrt)
+#     elif scale == 'Log10':
+#         plot_column = f'{y_column} (log10)'
+#         data[plot_column] = data[y_column].apply(np.log10)
+#     else:
+#         plot_column = y_column
+
+#     if selected:
+#         data['Legend'] = np.where(data['sequence'].isin(selected), 'selection', data['Legend'])
+
+#     # Update only if figure layout hasn't changed
+#     if current_fig:
+#         # Update existing traces
+#         current_fig['data'][0]['y'] = data[plot_column]
+#         current_fig['data'][0]['customdata'] = data[['seq_origin', 'GroupID', 'Position', 'sequence', 'Input_CPM']].values
+#         return current_fig
+
+#     # Create the figure (only once if it's not available)
+#     hover_data = {'Legend': False, 'seq_origin': True, 'GroupID': True, 'Position': True, 'sequence': True, 'Input_CPM': True}
+#     fig = px.scatter(
+#         data,
+#         y=plot_column,
+#         color='Legend',
+#         hover_name='Legend',
+#         hover_data=hover_data,
+#         height=500
+#     )
+
+#     # Customize trace styles
+#     for trace in fig.data:
+#         if trace.name == 'parent':
+#             trace.marker.color = 'black'
+#             trace.marker.size = 5
+#         elif trace.name == 'selection':
+#             trace.marker.color = 'red'
+#             trace.marker.line = {'color': 'black', 'width': 2}
+#             trace.marker.size = 8
+#         else:
+#             trace.marker.size = 5
+
+#     return fig
 
 if __name__ == '__main__':
     app.run(debug=True)
