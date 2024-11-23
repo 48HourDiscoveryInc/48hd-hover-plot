@@ -204,7 +204,7 @@ def update_graph_new(serialized_data, y_column, scale, selected):
 
     # make figure
     hover_data = {'Legend': False, 'seq_origin': True, 'GroupID': True, 'Position': True, 'sequence': True, 'Input_CPM': True}
-    fig = px.scatter(data, y=plot_column, color='Legend', hover_name='Legend', hover_data=hover_data, height=500)
+    fig = px.scatter(data, y=plot_column, color='Legend', hover_name='Legend', hover_data=hover_data, height=500, render_mode='webgl')
     for trace in fig.data:
         if trace.name == 'parent':
             trace.marker.color = 'black'
