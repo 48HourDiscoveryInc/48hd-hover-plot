@@ -171,13 +171,19 @@ def update_table(serialized_data, selected):
     Input('column-dropdown', 'value'),
     Input('scale-dropdown', 'value'),
     Input('sequence-dropdown', 'value'),
-    State('manhattan-plot', 'figure')
+    State('manhattan-plot', 'figure'),
 )
 def update_graph_new(serialized_data, y_column, scale, selected, current_fig):
     if not serialized_data or not y_column:
         return {}
     data = pickle.loads(base64.b64decode(serialized_data))
+
+    # bring parents to the front
+    parent_data = data[data['Legend'] == 'parent']
+    not_parent_data = data[data['Legend'] != 'parent']
+    data = pd.concat([not_parent_data, parent_data])
     
+    # select scale
     if scale == 'Square Root':
         plot_column = f'{y_column} (sqrt)'
         data[plot_column] = data[y_column].apply(np.sqrt)
@@ -187,7 +193,23 @@ def update_graph_new(serialized_data, y_column, scale, selected, current_fig):
     else:
         plot_column = y_column
 
-    # when figure already exists
+    # select sequences
+    if selected:
+        data['Legend'] = np.where(data['sequence'].isin(selected), 'selection', data['Legend'])
+
+    # if plot plot is unchanged
+    if current_fig:
+        current_plot_column = current_fig['layout']['yaxis']['title']['text']
+        if plot_column == current_plot_column:
+
+            for trace in current_fig['data']:
+                if trace['name'] == 'selection':
+                    trace['marker']['color'] = 'red'
+                    trace['marker']['line'] = {'color': 'black', 'width': 2}
+                    trace['marker']['size'] = 8
+
+            print('current_fig')
+            return current_fig
 
     # make figure
     hover_data = {'Legend': False, 'seq_origin': True, 'GroupID': True, 'Position': True, 'sequence': True, 'Input_CPM': True}
@@ -224,13 +246,6 @@ def update_graph_new(serialized_data, y_column, scale, selected, current_fig):
 
 #     if selected:
 #         data['Legend'] = np.where(data['sequence'].isin(selected), 'selection', data['Legend'])
-
-#     # Update only if figure layout hasn't changed
-#     if current_fig:
-#         # Update existing traces
-#         current_fig['data'][0]['y'] = data[plot_column]
-#         current_fig['data'][0]['customdata'] = data[['seq_origin', 'GroupID', 'Position', 'sequence', 'Input_CPM']].values
-#         return current_fig
 
 #     # Create the figure (only once if it's not available)
 #     hover_data = {'Legend': False, 'seq_origin': True, 'GroupID': True, 'Position': True, 'sequence': True, 'Input_CPM': True}
