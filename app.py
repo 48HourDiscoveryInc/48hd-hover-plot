@@ -177,6 +177,7 @@ def update_graph_new(serialized_data, y_column, scale, selected, current_fig):
     if not serialized_data or not y_column:
         return {}
     data = pickle.loads(base64.b64decode(serialized_data))
+    
     if scale == 'Square Root':
         plot_column = f'{y_column} (sqrt)'
         data[plot_column] = data[y_column].apply(np.sqrt)
