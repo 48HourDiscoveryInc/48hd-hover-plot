@@ -1,12 +1,10 @@
 import numpy as np
 import pandas as pd
 
-import plotly.express as px
-
 import io
 import base64
 import pickle
-from flask_caching import Cache
+import plotly.express as px
 
 from dash import Dash
 from dash import dash_table
@@ -62,7 +60,7 @@ app.layout = html.Div([
 
         html.Div([
             html.Label('Select sequences', style=LABEL_STYLE),
-            dcc.Dropdown(id='sequence-dropdown', style=DROPDOWN_STYLE, multi=True),
+            dcc.Dropdown(id='sequence-dropdown', style=DROPDOWN_STYLE, multi=True, persistence=True, persistence_type='local'),
         ], style={'flex': '1', 'margin': '10px'}),
     ], style={'display': 'flex', 'flexDirection': 'row', 'gap': '10px'}),
 
