@@ -170,10 +170,9 @@ def update_table(serialized_data, selected):
     Input('stored-data', 'data'),
     Input('column-dropdown', 'value'),
     Input('scale-dropdown', 'value'),
-    Input('sequence-dropdown', 'value'),
-    State('manhattan-plot', 'figure'),
+    Input('sequence-dropdown', 'value')
 )
-def update_graph_new(serialized_data, y_column, scale, selected, current_fig):
+def update_graph_new(serialized_data, y_column, scale, selected):
     if not serialized_data or not y_column:
         return {}
     data = pickle.loads(base64.b64decode(serialized_data))
@@ -194,22 +193,14 @@ def update_graph_new(serialized_data, y_column, scale, selected, current_fig):
         plot_column = y_column
 
     # select sequences
-    if selected:
-        data['Legend'] = np.where(data['sequence'].isin(selected), 'selection', data['Legend'])
+    if selected is not None:
+        selected_idx = data[data['sequence'].isin(selected)].index
+        data.loc[selected_idx, 'Legend'] = 'selection'
 
-    # if plot plot is unchanged
-    if current_fig:
-        current_plot_column = current_fig['layout']['yaxis']['title']['text']
-        if plot_column == current_plot_column:
-
-            for trace in current_fig['data']:
-                if trace['name'] == 'selection':
-                    trace['marker']['color'] = 'red'
-                    trace['marker']['line'] = {'color': 'black', 'width': 2}
-                    trace['marker']['size'] = 8
-
-            print('current_fig')
-            return current_fig
+    # bring selected to the front
+    select_data = data[data['Legend'] == 'selection']
+    not_select_data = data[data['Legend'] != 'selection']
+    data = pd.concat([not_select_data, select_data])
 
     # make figure
     hover_data = {'Legend': False, 'seq_origin': True, 'GroupID': True, 'Position': True, 'sequence': True, 'Input_CPM': True}
@@ -217,60 +208,14 @@ def update_graph_new(serialized_data, y_column, scale, selected, current_fig):
     for trace in fig.data:
         if trace.name == 'parent':
             trace.marker.color = 'black'
-        trace.marker.size = 5
+            trace.marker.size = 5
+        elif trace.name == 'selection':
+            trace.marker.color = 'red'
+            trace.marker.line = {'color': 'black', 'width': 2}
+            trace.marker.size = 8
+        else:
+            trace.marker.size = 5
     return fig
-
-
-
-# @callback(
-#     Output('manhattan-plot', 'figure'),
-#     Input('stored-data', 'data'),
-#     Input('column-dropdown', 'value'),
-#     Input('scale-dropdown', 'value'),
-#     Input('sequence-dropdown', 'value'),
-#     State('manhattan-plot', 'figure')
-# )
-# def update_graph(serialized_data, y_column, scale, selected, current_fig):
-#     if not serialized_data or not y_column:
-#         return {}
-#     data = pickle.loads(base64.b64decode(serialized_data))
-
-#     if scale == 'Square Root':
-#         plot_column = f'{y_column} (sqrt)'
-#         data[plot_column] = data[y_column].apply(np.sqrt)
-#     elif scale == 'Log10':
-#         plot_column = f'{y_column} (log10)'
-#         data[plot_column] = data[y_column].apply(np.log10)
-#     else:
-#         plot_column = y_column
-
-#     if selected:
-#         data['Legend'] = np.where(data['sequence'].isin(selected), 'selection', data['Legend'])
-
-#     # Create the figure (only once if it's not available)
-#     hover_data = {'Legend': False, 'seq_origin': True, 'GroupID': True, 'Position': True, 'sequence': True, 'Input_CPM': True}
-#     fig = px.scatter(
-#         data,
-#         y=plot_column,
-#         color='Legend',
-#         hover_name='Legend',
-#         hover_data=hover_data,
-#         height=500
-#     )
-
-#     # Customize trace styles
-#     for trace in fig.data:
-#         if trace.name == 'parent':
-#             trace.marker.color = 'black'
-#             trace.marker.size = 5
-#         elif trace.name == 'selection':
-#             trace.marker.color = 'red'
-#             trace.marker.line = {'color': 'black', 'width': 2}
-#             trace.marker.size = 8
-#         else:
-#             trace.marker.size = 5
-
-#     return fig
 
 if __name__ == '__main__':
     app.run(debug=True)
