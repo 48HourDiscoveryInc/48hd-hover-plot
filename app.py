@@ -72,7 +72,7 @@ app.layout = html.Div([
     Output('stored-data', 'data'),
     Output('upload-data', 'children'),
     Input('upload-data', 'contents'),
-    State('upload-data', 'filename'),
+    State('upload-data', 'filename')
 )
 def upload_data(contents, filename):
     if contents is None:
@@ -125,7 +125,8 @@ def upload_data(contents, filename):
     Output('column-dropdown', 'options'),
     Output('column-dropdown', 'value'),
     Output('sequence-dropdown', 'options'),
-    Input('stored-data', 'data')
+    Input('stored-data', 'data'),
+    prevent_initial_call=True
 )
 def update_dropdown(serialized_data):
     if serialized_data:
@@ -151,30 +152,19 @@ def update_selection(click_data, selected):
         return selected
     else:
         return selected + [selection]
-    
-@callback(
-    Output('selection-data', 'data'),
-    Input('stored-data', 'data'),
-    Input('sequence-dropdown', 'value')
-)
-def update_table(serialized_data, selected):
-    if serialized_data and selected is not None:
-        data = pickle.loads(base64.b64decode(serialized_data))
-        selection_data = data[data['sequence'].isin(selected)]
-        return selection_data.drop('Legend', axis=1).to_dict('records')
-    return []
-
 
 @callback(
     Output('manhattan-plot', 'figure'),
+    Output('selection-data', 'data'),
     Input('stored-data', 'data'),
     Input('column-dropdown', 'value'),
     Input('scale-dropdown', 'value'),
-    Input('sequence-dropdown', 'value')
+    Input('sequence-dropdown', 'value'),
+    prevent_initial_call=True
 )
-def update_graph_new(serialized_data, y_column, scale, selected):
-    if not serialized_data or not y_column:
-        return {}
+def update_graphand_table(serialized_data, y_column, scale, selected):
+    if not serialized_data:
+        return {}, []
     data = pickle.loads(base64.b64decode(serialized_data))
 
     # bring parents to the front
@@ -196,6 +186,10 @@ def update_graph_new(serialized_data, y_column, scale, selected):
     if selected is not None:
         selected_idx = data[data['sequence'].isin(selected)].index
         data.loc[selected_idx, 'Legend'] = 'selection'
+        selection_data = data[data['sequence'].isin(selected)]
+        selection_data = selection_data.drop('Legend', axis=1).to_dict('records')
+    else:
+        selection_data = []
 
     # bring selected to the front
     select_data = data[data['Legend'] == 'selection']
@@ -215,7 +209,7 @@ def update_graph_new(serialized_data, y_column, scale, selected):
             trace.marker.size = 8
         else:
             trace.marker.size = 5
-    return fig
+    return fig, selection_data
 
 if __name__ == '__main__':
     app.run(debug=True)
