@@ -47,7 +47,11 @@ TABLE_STYLE = {
     'height': '300px',
     'overflowY': 'auto'
 }
-OVERLAY_STYLE = {
+OVERLAY_STYLE_1 = {
+    'visibility': 'visible',
+    'opacity': '0.0',
+}
+OVERLAY_STYLE_2 = {
     'visibility': 'visible',
     'opacity': '0.3',
 }
@@ -62,7 +66,7 @@ app.layout = html.Div([
 
     dcc.Loading(id='loading-upload', type='default', children=[
         dcc.Upload(id='upload-data', children='Upload a CSV', style=UPLOAD_STYLE),
-    ], color='black', overlay_style=OVERLAY_STYLE),
+    ], color='black', overlay_style=OVERLAY_STYLE_1),
 
     dcc.Store(id='stored-data'),
 
@@ -85,7 +89,7 @@ app.layout = html.Div([
 
     dcc.Loading(id='loading-manhattan', type='default', children=[
         dcc.Graph(id='manhattan-plot'),
-    ], color='black', overlay_style=OVERLAY_STYLE),
+    ], color='black', overlay_style=OVERLAY_STYLE_2),
 
     dash_table.DataTable(id='selection-data', page_action='none', export_format='xlsx', style_table=TABLE_STYLE)
 ])
