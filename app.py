@@ -94,9 +94,13 @@ app.layout = html.Div([
     dash_table.DataTable(id='selection-data', page_action='none', export_format='xlsx', style_table=TABLE_STYLE)
 ])
 
+
 @callback(
     Output('stored-data', 'data'),
     Output('upload-data', 'children'),
+    Output('column-dropdown', 'options'),
+    Output('column-dropdown', 'value'),
+    Output('sequence-dropdown', 'options'),
     Input('upload-data', 'contents'),
     State('upload-data', 'filename'),
     prevent_initial_call=True
@@ -104,7 +108,7 @@ app.layout = html.Div([
 @cache.memoize(timeout=3600)
 def upload_data(contents, filename):
     if contents is None:
-        return {}, 'Upload A CSV'
+        return {}, 'Upload A CSV', [], None, []
     _, content_string = contents.split(',')
     decoded = base64.b64decode(content_string)
     if filename.endswith('.csv'):
@@ -114,12 +118,12 @@ def upload_data(contents, filename):
         required_columns = ['GroupID', 'Position', 'seq_origin', 'sequence', 'Input_CPM']
         for column in required_columns:
             if not column in data.columns:
-                return {}, html.Label(f'{filename} does not have column: {column}', style=ERROR_STYLE)
+                return {}, html.Label(f'{filename} does not have column: {column}', style=ERROR_STYLE), [], None, []
             
         # check for FC columns
         fc_columns = [column for column in data.columns if 'FC' in column]
         if len(fc_columns) == 0:
-            return {}, html.Label(f'{filename} does not have FC columns', style=ERROR_STYLE)
+            return {}, html.Label(f'{filename} does not have FC columns', style=ERROR_STYLE), [], None, []
             
         # add legend with parents
         gid_counts = data.GroupID.value_counts()
@@ -146,24 +150,9 @@ def upload_data(contents, filename):
         # serialize the DataFrame
         serialized_data = base64.b64encode(pickle.dumps(data)).decode('utf-8')
 
-        return serialized_data, f'📄 {filename}'
-    return {}, html.Label(f'Error reading {filename}', style=ERROR_STYLE)
-
-@callback(
-    Output('column-dropdown', 'options'),
-    Output('column-dropdown', 'value'),
-    Output('sequence-dropdown', 'options'),
-    Input('stored-data', 'data'),
-    prevent_initial_call=True
-)
-@cache.memoize(timeout=3600)
-def update_dropdown(serialized_data):
-    if serialized_data:
-        data = pickle.loads(base64.b64decode(serialized_data))
-        fc_columns = [column for column in data.columns if 'FC' in column]
-        sequences = sorted(data.sequence.unique())
-        return fc_columns, fc_columns[0], sequences
-    return [], None, []
+        return serialized_data, f'📄 {filename}', fc_columns, fc_columns[0], sorted(data.sequence.unique())
+    
+    return {}, html.Label(f'Error reading {filename}', style=ERROR_STYLE), [], None, []
 
 @callback(
     Output('sequence-dropdown', 'value'),
