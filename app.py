@@ -11,6 +11,7 @@ from dash import dash_table
 from dash import dcc, html
 from dash import callback
 from dash import Input, Output, State
+from dash import Patch
 
 from flask_caching import Cache
 
@@ -188,7 +189,7 @@ def update_selection(click_data, selected):
     Input('stored-data', 'data'),
     Input('column-dropdown', 'value'),
     Input('scale-dropdown', 'value'),
-    Input('sequence-dropdown', 'value')
+    Input('sequence-dropdown', 'value'),
     prevent_initial_call=True
 )
 @cache.memoize(timeout=3600)
