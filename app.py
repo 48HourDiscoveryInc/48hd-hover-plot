@@ -47,13 +47,23 @@ TABLE_STYLE = {
     'height': '300px',
     'overflowY': 'auto'
 }
+OVERLAY_STYLE = {
+    'visibility': 'visible',
+    'opacity': '0.3',
+}
 ERROR_STYLE = {
     'color': 'red',
     **FONT_STYLE
 }
 
 app.layout = html.Div([
-    dcc.Upload(id='upload-data', style=UPLOAD_STYLE),
+
+    html.H3('48Hour Discovery Inc.', style=FONT_STYLE),
+
+    dcc.Loading(id='loading-upload', type='default', children=[
+        dcc.Upload(id='upload-data', children='Upload a CSV', style=UPLOAD_STYLE),
+    ], color='black', overlay_style=OVERLAY_STYLE),
+
     dcc.Store(id='stored-data'),
 
     html.Div([
@@ -73,7 +83,10 @@ app.layout = html.Div([
         ], style={'flex': '1', 'margin': '10px'}),
     ], style={'display': 'flex', 'flexDirection': 'row', 'gap': '10px'}),
 
-    dcc.Graph(id='manhattan-plot'),
+    dcc.Loading(id='loading-manhattan', type='default', children=[
+        dcc.Graph(id='manhattan-plot'),
+    ], color='black', overlay_style=OVERLAY_STYLE),
+
     dash_table.DataTable(id='selection-data', page_action='none', export_format='xlsx', style_table=TABLE_STYLE)
 ])
 
@@ -81,7 +94,8 @@ app.layout = html.Div([
     Output('stored-data', 'data'),
     Output('upload-data', 'children'),
     Input('upload-data', 'contents'),
-    State('upload-data', 'filename')
+    State('upload-data', 'filename'),
+    prevent_initial_call=True
 )
 @cache.memoize(timeout=3600)
 def upload_data(contents, filename):
@@ -211,6 +225,8 @@ def update_graphand_table(serialized_data, y_column, scale, selected):
 
     else:
         selection_data = []
+
+    
 
     # make figure
     hover_data = {'Legend': False, 'seq_origin': True, 'GroupID': True, 'Position': True, 'sequence': True, 'Input_CPM': True}
