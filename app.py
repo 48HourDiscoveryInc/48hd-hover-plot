@@ -200,6 +200,8 @@ def update_graphand_table(serialized_data, y_column, scale, selected):
         selected_idx = data[data['sequence'].isin(selected)].index
         data.loc[selected_idx, 'Legend'] = 'selection'
         selection_data = data[data['sequence'].isin(selected)]
+        selection_columns = [x for x in selection_data.columns if '(log10)' not in x and '(sqrt)' not in x]
+        selection_data = selection_data[selection_columns]
         selection_data = selection_data.drop('Legend', axis=1).to_dict('records')
 
         # bring selected to the front
