@@ -201,13 +201,14 @@ def update_graphand_table(serialized_data, y_column, scale, selected):
         data.loc[selected_idx, 'Legend'] = 'selection'
         selection_data = data[data['sequence'].isin(selected)]
         selection_data = selection_data.drop('Legend', axis=1).to_dict('records')
+
+        # bring selected to the front
+        select_data = data[data['Legend'] == 'selection']
+        not_select_data = data[data['Legend'] != 'selection']
+        data = pd.concat([not_select_data, select_data])
+
     else:
         selection_data = []
-
-    # bring selected to the front
-    select_data = data[data['Legend'] == 'selection']
-    not_select_data = data[data['Legend'] != 'selection']
-    data = pd.concat([not_select_data, select_data])
 
     # make figure
     hover_data = {'Legend': False, 'seq_origin': True, 'GroupID': True, 'Position': True, 'sequence': True, 'Input_CPM': True}
