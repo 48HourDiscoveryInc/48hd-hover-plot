@@ -1,7 +1,6 @@
 import numpy as np
 import pandas as pd
 
-import os
 import io
 import base64
 import pickle
@@ -189,11 +188,11 @@ def update_selection(click_data, selected):
     Input('stored-data', 'data'),
     Input('column-dropdown', 'value'),
     Input('scale-dropdown', 'value'),
-    Input('sequence-dropdown', 'value'),
+    Input('sequence-dropdown', 'value')
     prevent_initial_call=True
 )
 @cache.memoize(timeout=3600)
-def update_graphand_table(serialized_data, y_column, scale, selected):
+def update_graph_and_table(serialized_data, y_column, scale, selected):
     if not serialized_data:
         return {}, []
     data = pickle.loads(base64.b64decode(serialized_data))
@@ -230,11 +229,11 @@ def update_graphand_table(serialized_data, y_column, scale, selected):
     else:
         selection_data = []
 
-    
-
     # make figure
     hover_data = {'Legend': False, 'seq_origin': True, 'GroupID': True, 'Position': True, 'sequence': True, 'Input_CPM': True}
     fig = px.scatter(data, y=plot_column, color='Legend', hover_name='Legend', hover_data=hover_data, height=500, render_mode='pointcloud')
+
+    # color parents and selection
     for trace in fig.data:
         if trace.name == 'parent':
             trace.marker.color = 'black'
