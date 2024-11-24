@@ -1,7 +1,7 @@
+import math
 import numpy as np
 import pandas as pd
 
-import os
 import io
 import base64
 import pickle
@@ -12,6 +12,7 @@ from dash import dash_table
 from dash import dcc, html
 from dash import callback
 from dash import Input, Output, State
+from dash import Patch
 
 from flask_caching import Cache
 
@@ -73,7 +74,7 @@ app.layout = html.Div([
     html.Div([
         html.Div([
             html.Label('Select column', style=LABEL_STYLE),
-            dcc.Dropdown(id='column-dropdown', value='', style=DROPDOWN_STYLE),
+            dcc.Dropdown(id='column-dropdown', multi=True, style=DROPDOWN_STYLE),
         ], style={'margin': '10px', 'width': '250px'}),
 
         html.Div([
@@ -85,6 +86,11 @@ app.layout = html.Div([
             html.Label('Select sequences', style=LABEL_STYLE),
             dcc.Dropdown(id='sequence-dropdown', style=DROPDOWN_STYLE, multi=True, persistence=True, persistence_type='local'),
         ], style={'flex': '1', 'margin': '10px'}),
+
+        html.Div([
+            html.Label('Pages', style=LABEL_STYLE),
+            dcc.Dropdown(id='page-dropdown', options=[1, 2, 3], value=1, style=DROPDOWN_STYLE),
+        ], style={'margin': '10px', 'width': '100px'}),
     ], style={'display': 'flex', 'flexDirection': 'row', 'gap': '10px'}),
 
     dcc.Loading(id='loading-manhattan', type='default', children=[
@@ -97,6 +103,9 @@ app.layout = html.Div([
 @callback(
     Output('stored-data', 'data'),
     Output('upload-data', 'children'),
+    Output('column-dropdown', 'options'),
+    Output('column-dropdown', 'value'),
+    Output('sequence-dropdown', 'options'),
     Input('upload-data', 'contents'),
     State('upload-data', 'filename'),
     prevent_initial_call=True
@@ -104,7 +113,7 @@ app.layout = html.Div([
 @cache.memoize(timeout=3600)
 def upload_data(contents, filename):
     if contents is None:
-        return {}, 'Upload A CSV'
+        return {}, 'Upload A CSV', [], None, []
     _, content_string = contents.split(',')
     decoded = base64.b64decode(content_string)
     if filename.endswith('.csv'):
@@ -114,12 +123,12 @@ def upload_data(contents, filename):
         required_columns = ['GroupID', 'Position', 'seq_origin', 'sequence', 'Input_CPM']
         for column in required_columns:
             if not column in data.columns:
-                return {}, html.Label(f'{filename} does not have column: {column}', style=ERROR_STYLE)
+                return {}, html.Label(f'{filename} does not have column: {column}', style=ERROR_STYLE), [], None, []
             
         # check for FC columns
         fc_columns = [column for column in data.columns if 'FC' in column]
         if len(fc_columns) == 0:
-            return {}, html.Label(f'{filename} does not have FC columns', style=ERROR_STYLE)
+            return {}, html.Label(f'{filename} does not have FC columns', style=ERROR_STYLE), [], None, []
             
         # add legend with parents
         gid_counts = data.GroupID.value_counts()
@@ -146,78 +155,55 @@ def upload_data(contents, filename):
         # serialize the DataFrame
         serialized_data = base64.b64encode(pickle.dumps(data)).decode('utf-8')
 
-        return serialized_data, f'📄 {filename}'
-    return {}, html.Label(f'Error reading {filename}', style=ERROR_STYLE)
-
-@callback(
-    Output('column-dropdown', 'options'),
-    Output('column-dropdown', 'value'),
-    Output('sequence-dropdown', 'options'),
-    Input('stored-data', 'data'),
-    prevent_initial_call=True
-)
-@cache.memoize(timeout=3600)
-def update_dropdown(serialized_data):
-    if serialized_data:
-        data = pickle.loads(base64.b64decode(serialized_data))
-        fc_columns = [column for column in data.columns if 'FC' in column]
-        sequences = sorted(data.sequence.unique())
-        return fc_columns, fc_columns[0], sequences
-    return [], None, []
-
-@callback(
-    Output('sequence-dropdown', 'value'),
-    Input('manhattan-plot', 'clickData'),
-    State('sequence-dropdown', 'value')
-)
-@cache.memoize(timeout=3600)
-def update_selection(click_data, selected):
-    if click_data is None:
-        return selected
-    selection = click_data['points'][0]['customdata'][4]
-    if selected is None:
-        return [selection]
-    elif selection in selected:
-        selected = [x for x in selected if x != selection]
-        return selected
-    else:
-        return selected + [selection]
+        return serialized_data, f'📄 {filename}', fc_columns, fc_columns[0], sorted(data.sequence.unique())
+    
+    return {}, html.Label(f'Error reading {filename}', style=ERROR_STYLE), [], None, []
 
 @callback(
     Output('manhattan-plot', 'figure'),
+    Output('sequence-dropdown', 'value'),
+    Output('manhattan-plot', 'clickData'),
     Output('selection-data', 'data'),
     Input('stored-data', 'data'),
     Input('column-dropdown', 'value'),
     Input('scale-dropdown', 'value'),
     Input('sequence-dropdown', 'value'),
+    Input('manhattan-plot', 'clickData'),
+    Input('page-dropdown', 'value'),
     prevent_initial_call=True
 )
-@cache.memoize(timeout=3600)
-def update_graphand_table(serialized_data, y_column, scale, selected):
-    if not serialized_data:
-        return {}, []
+# @cache.memoize(timeout=3600)
+def update_graph(serialized_data, y_columns, scale, selected, click_data, pages):
+    if not serialized_data or not y_columns:
+        return {}, None, None, []
+    if type(y_columns) == str:
+        y_columns = [y_columns]
+    
     data = pickle.loads(base64.b64decode(serialized_data))
+
+    if click_data is None:
+        pass
+    else:
+        selection = click_data['points'][0]['customdata'][4]
+        if selected is None:
+            selected = [selection]
+        elif selection in selected:
+            selected = [x for x in selected if x != selection]
+        else:
+            selected += [selection]
 
     # bring parents to the front
     parent_data = data[data['Legend'] == 'parent']
     not_parent_data = data[data['Legend'] != 'parent']
     data = pd.concat([not_parent_data, parent_data])
-    
-    # select scale
-    if scale == 'Square Root':
-        plot_column = f'{y_column} (sqrt)'
-        data[plot_column] = data[y_column].apply(np.sqrt)
-    elif scale == 'Log10':
-        plot_column = f'{y_column} (log10)'
-        data[plot_column] = data[y_column].apply(np.log10)
-    else:
-        plot_column = y_column
 
     # select sequences
     if selected is not None:
         selected_idx = data[data['sequence'].isin(selected)].index
         data.loc[selected_idx, 'Legend'] = 'selection'
-        selection_data = data[data['sequence'].isin(selected)]
+
+        # selection data for export
+        selection_data = data[data['sequence'].isin(selected)].copy()
         selection_columns = [x for x in selection_data.columns if '(log10)' not in x and '(sqrt)' not in x]
         selection_data = selection_data[selection_columns]
         selection_data = selection_data.drop('Legend', axis=1).to_dict('records')
@@ -230,11 +216,36 @@ def update_graphand_table(serialized_data, y_column, scale, selected):
     else:
         selection_data = []
 
-    
+    target_data_list = []
+    for column in y_columns:
+        target_data = data[['GroupID', 'Position', 'seq_origin', 'sequence', 'Input_CPM', 'Legend']]
 
-    # make figure
+        # select scale
+        if scale == 'Square Root':
+            plot_column = 'FC (sqrt)'
+            target_data['Target'] = column
+            target_data[plot_column] = data[column].apply(np.sqrt)
+
+        elif scale == 'Log10':
+            plot_column = 'FC (log10)'
+            target_data['Target'] = column
+            target_data[plot_column] = data[column].apply(np.log10)
+        else:
+            plot_column = 'FC'
+            target_data['Target'] = column
+            target_data[plot_column] = data[column]
+
+        target_data_list.append(target_data)
+
+    height = 100
+    n_plots = len(y_columns)
+    height += math.ceil(n_plots / pages) * 250
+    
+    data = pd.concat(target_data_list)
     hover_data = {'Legend': False, 'seq_origin': True, 'GroupID': True, 'Position': True, 'sequence': True, 'Input_CPM': True}
-    fig = px.scatter(data, y=plot_column, color='Legend', hover_name='Legend', hover_data=hover_data, height=500, render_mode='pointcloud')
+    fig = px.scatter(data, y=plot_column, color='Legend', facet_col='Target', facet_col_wrap=pages, hover_name='Legend', hover_data=hover_data, height=height, render_mode='pointcloud')
+
+    # color parents and selection
     for trace in fig.data:
         if trace.name == 'parent':
             trace.marker.color = 'black'
@@ -245,7 +256,8 @@ def update_graphand_table(serialized_data, y_column, scale, selected):
             trace.marker.size = 8
         else:
             trace.marker.size = 5
-    return fig, selection_data
+
+    return fig, selected, None, selection_data
 
 if __name__ == '__main__':
     app.run(debug=True)
