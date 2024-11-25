@@ -89,7 +89,7 @@ app.layout = html.Div([
 
         html.Div([
             html.Label('Pages', style=LABEL_STYLE),
-            dcc.Dropdown(id='page-dropdown', options=[1, 2, 3], value=1, style=DROPDOWN_STYLE),
+            dcc.Dropdown(id='page-dropdown', options=[1, 2, 3], value=2, style=DROPDOWN_STYLE),
         ], style={'margin': '10px', 'width': '100px'}),
     ], style={'display': 'flex', 'flexDirection': 'row', 'gap': '10px'}),
 
@@ -239,7 +239,7 @@ def update_graph(serialized_data, y_columns, scale, selected, click_data, pages)
 
     height = 100
     n_plots = len(y_columns)
-    height += math.ceil(n_plots / pages) * 250
+    height += math.ceil(n_plots / pages) * 300
     
     data = pd.concat(target_data_list)
     hover_data = {'Legend': False, 'seq_origin': True, 'GroupID': True, 'Position': True, 'sequence': True, 'Input_CPM': True}
@@ -249,13 +249,13 @@ def update_graph(serialized_data, y_columns, scale, selected, click_data, pages)
     for trace in fig.data:
         if trace.name == 'parent':
             trace.marker.color = 'black'
-            trace.marker.size = 5
+            trace.marker.size = 4.5
         elif trace.name == 'selection':
             trace.marker.color = 'red'
             trace.marker.line = {'color': 'black', 'width': 2}
-            trace.marker.size = 8
+            trace.marker.size = 7.5
         else:
-            trace.marker.size = 5
+            trace.marker.size = 4.5
 
     return fig, selected, None, selection_data
 
