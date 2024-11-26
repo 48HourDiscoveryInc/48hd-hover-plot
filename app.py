@@ -14,6 +14,8 @@ from dash import callback
 from dash import Input, Output, State
 from dash import Patch
 
+import dash_daq as daq
+
 from flask_caching import Cache
 
 app = Dash(__name__)
@@ -86,6 +88,11 @@ app.layout = html.Div([
             html.Label('Select sequences', style=LABEL_STYLE),
             dcc.Dropdown(id='sequence-dropdown', style=DROPDOWN_STYLE, multi=True, persistence=True, persistence_type='local'),
         ], style={'flex': '1', 'margin': '10px'}),
+
+        html.Div([
+            html.Label('Erase', style=LABEL_STYLE, id='switch-message'),
+            daq.BooleanSwitch(id='boolean-switch', on=False, color='gray'),
+        ], style={'margin': '10px'}),
 
         html.Div([
             html.Label('Pages', style=LABEL_STYLE),
@@ -169,11 +176,13 @@ def upload_data(contents, filename):
     Input('scale-dropdown', 'value'),
     Input('sequence-dropdown', 'value'),
     Input('manhattan-plot', 'clickData'),
+    Input('manhattan-plot', 'selectedData'),
+    Input('boolean-switch', 'on'),
     Input('page-dropdown', 'value'),
     prevent_initial_call=True
 )
-# @cache.memoize(timeout=3600)
-def update_graph(serialized_data, y_columns, scale, selected, click_data, pages):
+@cache.memoize(timeout=3600)
+def update_graph(serialized_data, y_columns, scale, selected, click_data, selected_data, erase, pages):
     if not serialized_data or not y_columns:
         return {}, None, None, []
     if type(y_columns) == str:
@@ -185,12 +194,27 @@ def update_graph(serialized_data, y_columns, scale, selected, click_data, pages)
         pass
     else:
         selection = click_data['points'][0]['customdata'][4]
-        if selected is None:
-            selected = [selection]
-        elif selection in selected:
-            selected = [x for x in selected if x != selection]
+        if erase:
+            if selected is not None:
+                selected = [x for x in selected if x != selection]
         else:
-            selected += [selection]
+            if selected is None:
+                selected = [selection]
+            elif not selection in selected:
+                selected += [selection]
+
+    if selected_data is None:
+        pass
+    else:
+        selections = [point['customdata'][4] for point in selected_data['points']]
+        if erase:
+            if selected is not None:
+                selected = [x for x in selected if not x in selections]
+        else:
+            if selected is None:
+                selected = selections
+            else:
+                selected += [x for x in selections if not x in selected]
 
     # bring parents to the front
     parent_data = data[data['Legend'] == 'parent']
