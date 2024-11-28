@@ -2,6 +2,7 @@ dash
 numpy
 pandas
 polars
+pyarrow
 scikit_learn
 plotly
 flask_caching
