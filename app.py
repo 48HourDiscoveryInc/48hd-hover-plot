@@ -1,7 +1,6 @@
 import math
 import polars as pl
 
-import os
 import io
 import base64
 import plotly.express as px
@@ -115,7 +114,7 @@ def upload_data(contents, filename):
     if filename.endswith('.csv'):
 
         print('loading data')
-        load_data = pl.read_csv(io.StringIO(decoded.decode('utf-8')))
+        load_data = pl.read_csv(io.StringIO(decoded.decode('utf-8')), null_values=['#DIV/0!'])
 
         # check for required columns
         required_columns = ['GroupID', 'Position', 'seq_origin', 'sequence', 'Input_CPM']
@@ -169,7 +168,7 @@ def update_graph(store_data, y_columns, scale, selected, click_data, selected_da
         print('no data')
         return {}, None, None, []
 
-    plot_data = pl.from_dict(store_data, orient='split')
+    plot_data = pl.from_records(store_data, orient='split')
     
     if type(y_columns) == str:
         y_columns = [y_columns]
