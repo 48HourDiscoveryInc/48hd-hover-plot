@@ -168,7 +168,7 @@ def update_graph(store_data, y_columns, scale, selected, click_data, selected_da
         print('no data')
         return {}, None, None, []
 
-    plot_data = pl.from_records(store_data, orient='split')
+    plot_data = pl.from_records(store_data)
     
     if type(y_columns) == str:
         y_columns = [y_columns]
