@@ -1,5 +1,6 @@
 dash
 numpy
+pandas
 polars
 scikit_learn
 plotly
