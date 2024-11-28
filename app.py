@@ -56,6 +56,7 @@ ERROR_STYLE = {
 app.layout = html.Div([
 
     html.H3('48Hour Discovery Inc.', style=FONT_STYLE),
+    dcc.Store(id='data-store'),
 
     dcc.Loading(id='loading-upload', type='default', children=[
         dcc.Upload(id='upload-data', children='Upload a CSV', style=UPLOAD_STYLE),
@@ -96,6 +97,7 @@ app.layout = html.Div([
 ])
 
 @callback(
+    Output('data-store', 'data'),
     Output('upload-data', 'children'),
     Output('column-dropdown', 'options'),
     Output('column-dropdown', 'value'),
@@ -106,26 +108,26 @@ app.layout = html.Div([
 )
 def upload_data(contents, filename):
     if contents is None:
-        return 'Upload A CSV', [], None, []
+        return [], 'Upload A CSV', [], None, []
     
     _, content_string = contents.split(',')
     decoded = base64.b64decode(content_string)
     if filename.endswith('.csv'):
 
         print('loading data')
-        load_data = pl.scan_csv(io.StringIO(decoded.decode('utf-8')))
+        load_data = pl.read_csv(io.StringIO(decoded.decode('utf-8')))
 
         # check for required columns
         required_columns = ['GroupID', 'Position', 'seq_origin', 'sequence', 'Input_CPM']
         available_columns = load_data.collect_schema()
         for column in required_columns:
             if not column in available_columns:
-                return html.Label(f'{filename} does not have column: {column}', style=ERROR_STYLE), [], None, []
+                return [], html.Label(f'{filename} does not have column: {column}', style=ERROR_STYLE), [], None, []
             
         # check for FC columns
         fc_columns = [col for col in available_columns if 'FC' in col]
         if len(fc_columns) == 0:
-            return html.Label(f'{filename} does not have FC columns', style=ERROR_STYLE), [], None, []
+            return [], html.Label(f'{filename} does not have FC columns', style=ERROR_STYLE), [], None, []
 
         # transform data
         group_counts = load_data.group_by('GroupID').agg(pl.count('GroupID').alias('count'))
@@ -138,20 +140,20 @@ def upload_data(contents, filename):
             .select(required_columns + fc_columns + ['Legend']) \
             .with_row_index()
 
-        load_data = load_data.collect()
-        load_data.write_parquet('data.parquet')
         sequences = sorted(load_data['sequence'].unique())
+        store_data = load_data.to_pandas().to_dict('records')
         print('loaded data')
 
-        return f'📄 {filename}', fc_columns, fc_columns[0], sequences
+        return store_data, f'📄 {filename}', fc_columns, fc_columns[0], sequences
     
-    return html.Label(f'Error reading {filename}', style=ERROR_STYLE), [], None, []
+    return [], html.Label(f'Error reading {filename}', style=ERROR_STYLE), [], None, []
 
 @callback(
     Output('manhattan-plot', 'figure'),
     Output('sequence-dropdown', 'value'),
     Output('manhattan-plot', 'clickData'),
     Output('selection-data', 'data'),
+    State('data-store', 'data'),
     Input('column-dropdown', 'value'),
     Input('scale-dropdown', 'value'),
     Input('sequence-dropdown', 'value'),
@@ -161,13 +163,13 @@ def upload_data(contents, filename):
     Input('page-dropdown', 'value'),
     prevent_initial_call=True
 )
-def update_graph(y_columns, scale, selected, click_data, selected_data, erase, pages):
+def update_graph(store_data, y_columns, scale, selected, click_data, selected_data, erase, pages):
 
-    if not os.path.isfile('data.parquet') or not y_columns:
+    if not store_data or not y_columns:
         print('no data')
         return {}, None, None, []
 
-    plot_data = pl.scan_parquet('data.parquet')
+    plot_data = pl.from_dict(store_data, orient='split')
     
     if type(y_columns) == str:
         y_columns = [y_columns]
@@ -206,7 +208,7 @@ def update_graph(y_columns, scale, selected, click_data, selected_data, erase, p
 
         # selection data for export
         selection_data = plot_data.filter(pl.col('Legend') == 'selection') \
-            .collect().to_pandas().to_dict('records')
+            .to_pandas().to_dict('records')
 
     else:
         selection_data = []
@@ -249,8 +251,7 @@ def update_graph(y_columns, scale, selected, click_data, selected_data, erase, p
         .with_columns((pl.col('Legend') == 'parent').cast(pl.Int8).alias('is_parent')) \
         .with_columns((pl.col('Legend') == 'selection').cast(pl.Int8).alias('is_selection')) \
         .sort(['is_selection', 'is_parent', 'Legend']) \
-        .select([col for col in plot_data.collect_schema().names()]) \
-        .collect()
+        .select([col for col in plot_data.collect_schema().names()])
 
     height = 100
     n_plots = len(y_columns)
