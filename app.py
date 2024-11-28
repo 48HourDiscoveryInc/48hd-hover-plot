@@ -200,6 +200,7 @@ def update_graph(store_data, y_columns, scale, selected, click_data, selected_da
                 selected += [x for x in selections if not x in selected]
 
     # select sequences
+    required_columns = ['GroupID', 'Position', 'seq_origin', 'sequence', 'Input_CPM']
     if selected is not None:
         # add selections to legend
         plot_data = plot_data.with_columns(pl.lit('selection').alias('add_selection')) \
@@ -207,13 +208,13 @@ def update_graph(store_data, y_columns, scale, selected, click_data, selected_da
 
         # selection data for export
         selection_data = plot_data.filter(pl.col('Legend') == 'selection') \
+            .select(required_columns + [col for col in plot_data.collect_schema() if 'FC' in col]) \
             .to_pandas().to_dict('records')
 
     else:
         selection_data = []
 
     # select scale
-    required_columns = ['GroupID', 'Position', 'seq_origin', 'sequence', 'Input_CPM']
     if scale == 'Square Root':
         plot_column = 'FC (sqrt)'
         plot_data = pl.concat([
