@@ -13,16 +13,9 @@ from dash import Input, Output, State
 
 import dash_daq as daq
 
-from flask_caching import Cache
-
 app = Dash(__name__)
-
 server = app.server
-
-cache = Cache(server, config={
-    'CACHE_TYPE': 'filesystem',
-    'CACHE_DIR': 'cache'
-})
+data = None
 
 FONT_STYLE = {'fontFamily': 'monospace'}
 UPLOAD_STYLE = {
@@ -111,7 +104,6 @@ app.layout = html.Div([
     State('upload-data', 'filename'),
     prevent_initial_call=True
 )
-@cache.memoize(timeout=3600)
 def upload_data(contents, filename):
     if contents is None:
         return 'Upload A CSV', [], None, []
@@ -121,11 +113,12 @@ def upload_data(contents, filename):
     if filename.endswith('.csv'):
 
         global data
-        data = pl.scan_csv(io.StringIO(decoded.decode('utf-8')))
+        print('loading data')
+        load_data = pl.scan_csv(io.StringIO(decoded.decode('utf-8')))
 
         # check for required columns
         required_columns = ['GroupID', 'Position', 'seq_origin', 'sequence', 'Input_CPM']
-        available_columns = data.collect_schema()
+        available_columns = load_data.collect_schema()
         for column in required_columns:
             if not column in available_columns:
                 return html.Label(f'{filename} does not have column: {column}', style=ERROR_STYLE), [], None, []
@@ -136,8 +129,9 @@ def upload_data(contents, filename):
             return html.Label(f'{filename} does not have FC columns', style=ERROR_STYLE), [], None, []
 
         # transform data
-        group_counts = data.group_by('GroupID').agg(pl.count('GroupID').alias('count'))
-        data = data.select(required_columns + fc_columns) \
+        group_counts = load_data.group_by('GroupID').agg(pl.count('GroupID').alias('count'))
+
+        load_data = load_data.select(required_columns + fc_columns) \
             .sort(['seq_origin', 'GroupID', 'Position']) \
             .join(group_counts, on='GroupID', how='left') \
             .with_columns(pl.lit('parent').alias('add_parent')) \
@@ -145,7 +139,10 @@ def upload_data(contents, filename):
             .select(required_columns + fc_columns + ['Legend']) \
             .with_row_index()
 
-        return f'📄 {filename}', fc_columns, fc_columns[0], sorted(data.collect()['sequence'].unique())
+        data = load_data.collect()
+        print('loaded data')
+
+        return f'📄 {filename}', fc_columns, fc_columns[0], sorted(data['sequence'].unique())
     
     return html.Label(f'Error reading {filename}', style=ERROR_STYLE), [], None, []
 
@@ -163,12 +160,13 @@ def upload_data(contents, filename):
     Input('page-dropdown', 'value'),
     prevent_initial_call=True
 )
-@cache.memoize(timeout=3600)
 def update_graph(y_columns, scale, selected, click_data, selected_data, erase, pages):
 
     global data
     if data is None or not y_columns:
+        print('data is none')
         return {}, None, None, []
+
     plot_data = data.clone()
     
     if type(y_columns) == str:
@@ -207,7 +205,7 @@ def update_graph(y_columns, scale, selected, click_data, selected_data, erase, p
             .with_columns(pl.when(pl.col('sequence').is_in(selected)).then('add_selection').otherwise('Legend').alias('Legend'))
 
         # selection data for export
-        selection_data = plot_data.filter(pl.col('Legend') == 'selection').collect().to_pandas().to_dict('records')
+        selection_data = plot_data.filter(pl.col('Legend') == 'selection').to_pandas().to_dict('records')
 
     else:
         selection_data = []
@@ -250,8 +248,7 @@ def update_graph(y_columns, scale, selected, click_data, selected_data, erase, p
         .with_columns((pl.col('Legend') == 'parent').cast(pl.Int8).alias('is_parent')) \
         .with_columns((pl.col('Legend') == 'selection').cast(pl.Int8).alias('is_selection')) \
         .sort(['is_selection', 'is_parent', 'Legend']) \
-        .select([col for col in plot_data.collect_schema().names()]) \
-        .collect()
+        .select([col for col in plot_data.collect_schema().names()])
 
     height = 100
     n_plots = len(y_columns)
