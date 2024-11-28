@@ -111,7 +111,7 @@ app.layout = html.Div([
     State('upload-data', 'filename'),
     prevent_initial_call=True
 )
-# @cache.memoize(timeout=3600)
+@cache.memoize(timeout=3600)
 def upload_data(contents, filename):
     if contents is None:
         return 'Upload A CSV', [], None, []
@@ -163,7 +163,7 @@ def upload_data(contents, filename):
     Input('page-dropdown', 'value'),
     prevent_initial_call=True
 )
-# @cache.memoize(timeout=3600)
+@cache.memoize(timeout=3600)
 def update_graph(y_columns, scale, selected, click_data, selected_data, erase, pages):
 
     global data
