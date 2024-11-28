@@ -1,6 +1,7 @@
 import math
 import polars as pl
 
+import os
 import io
 import base64
 import plotly.express as px
@@ -15,7 +16,6 @@ import dash_daq as daq
 
 app = Dash(__name__)
 server = app.server
-data = None
 
 FONT_STYLE = {'fontFamily': 'monospace'}
 UPLOAD_STYLE = {
@@ -112,7 +112,6 @@ def upload_data(contents, filename):
     decoded = base64.b64decode(content_string)
     if filename.endswith('.csv'):
 
-        global data
         print('loading data')
         load_data = pl.scan_csv(io.StringIO(decoded.decode('utf-8')))
 
@@ -139,10 +138,12 @@ def upload_data(contents, filename):
             .select(required_columns + fc_columns + ['Legend']) \
             .with_row_index()
 
-        data = load_data.collect()
+        load_data = load_data.collect()
+        load_data.write_parquet('data.parquet')
+        sequences = sorted(load_data['sequence'].unique())
         print('loaded data')
 
-        return f'📄 {filename}', fc_columns, fc_columns[0], sorted(data['sequence'].unique())
+        return f'📄 {filename}', fc_columns, fc_columns[0], sequences
     
     return html.Label(f'Error reading {filename}', style=ERROR_STYLE), [], None, []
 
@@ -162,12 +163,11 @@ def upload_data(contents, filename):
 )
 def update_graph(y_columns, scale, selected, click_data, selected_data, erase, pages):
 
-    global data
-    if data is None or not y_columns:
-        print('data is none')
+    if not os.path.isfile('data.parquet') or not y_columns:
+        print('no data')
         return {}, None, None, []
 
-    plot_data = data.clone()
+    plot_data = pl.scan_parquet('data.parquet')
     
     if type(y_columns) == str:
         y_columns = [y_columns]
@@ -205,7 +205,8 @@ def update_graph(y_columns, scale, selected, click_data, selected_data, erase, p
             .with_columns(pl.when(pl.col('sequence').is_in(selected)).then('add_selection').otherwise('Legend').alias('Legend'))
 
         # selection data for export
-        selection_data = plot_data.filter(pl.col('Legend') == 'selection').to_pandas().to_dict('records')
+        selection_data = plot_data.filter(pl.col('Legend') == 'selection') \
+            .collect().to_pandas().to_dict('records')
 
     else:
         selection_data = []
@@ -248,7 +249,8 @@ def update_graph(y_columns, scale, selected, click_data, selected_data, erase, p
         .with_columns((pl.col('Legend') == 'parent').cast(pl.Int8).alias('is_parent')) \
         .with_columns((pl.col('Legend') == 'selection').cast(pl.Int8).alias('is_selection')) \
         .sort(['is_selection', 'is_parent', 'Legend']) \
-        .select([col for col in plot_data.collect_schema().names()])
+        .select([col for col in plot_data.collect_schema().names()]) \
+        .collect()
 
     height = 100
     n_plots = len(y_columns)
