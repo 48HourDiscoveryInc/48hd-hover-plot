@@ -1,10 +1,8 @@
 import math
-import numpy as np
-import pandas as pd
+import polars as pl
 
 import io
 import base64
-import pickle
 import plotly.express as px
 
 from dash import Dash
@@ -12,7 +10,6 @@ from dash import dash_table
 from dash import dcc, html
 from dash import callback
 from dash import Input, Output, State
-from dash import Patch
 
 import dash_daq as daq
 
@@ -71,8 +68,6 @@ app.layout = html.Div([
         dcc.Upload(id='upload-data', children='Upload a CSV', style=UPLOAD_STYLE),
     ], color='black', overlay_style=OVERLAY_STYLE_1),
 
-    dcc.Store(id='stored-data'),
-
     html.Div([
         html.Div([
             html.Label('Select column', style=LABEL_STYLE),
@@ -108,7 +103,6 @@ app.layout = html.Div([
 ])
 
 @callback(
-    Output('stored-data', 'data'),
     Output('upload-data', 'children'),
     Output('column-dropdown', 'options'),
     Output('column-dropdown', 'value'),
@@ -117,61 +111,49 @@ app.layout = html.Div([
     State('upload-data', 'filename'),
     prevent_initial_call=True
 )
-@cache.memoize(timeout=3600)
+# @cache.memoize(timeout=3600)
 def upload_data(contents, filename):
     if contents is None:
-        return {}, 'Upload A CSV', [], None, []
+        return 'Upload A CSV', [], None, []
+    
     _, content_string = contents.split(',')
     decoded = base64.b64decode(content_string)
     if filename.endswith('.csv'):
-        data = pd.read_csv(io.StringIO(decoded.decode('utf-8')))
-        
+
+        global data
+        data = pl.scan_csv(io.StringIO(decoded.decode('utf-8')))
+
         # check for required columns
         required_columns = ['GroupID', 'Position', 'seq_origin', 'sequence', 'Input_CPM']
+        available_columns = data.collect_schema()
         for column in required_columns:
-            if not column in data.columns:
-                return {}, html.Label(f'{filename} does not have column: {column}', style=ERROR_STYLE), [], None, []
+            if not column in available_columns:
+                return html.Label(f'{filename} does not have column: {column}', style=ERROR_STYLE), [], None, []
             
         # check for FC columns
-        fc_columns = [column for column in data.columns if 'FC' in column]
+        fc_columns = [col for col in available_columns if 'FC' in col]
         if len(fc_columns) == 0:
-            return {}, html.Label(f'{filename} does not have FC columns', style=ERROR_STYLE), [], None, []
-            
-        # add legend with parents
-        gid_counts = data.GroupID.value_counts()
-        gid_list = gid_counts[gid_counts > 1].index.tolist()
-        parent_data = data[data.GroupID.apply(lambda x: x in gid_list)]
-        parent_idx = parent_data[parent_data['Position'] == '0Z'].index.tolist()
-        data['Legend'] = data['seq_origin'].copy()
-        data.loc[parent_idx, 'Legend'] = 'parent'
+            return html.Label(f'{filename} does not have FC columns', style=ERROR_STYLE), [], None, []
 
-        # format the data
-        data = data[required_columns + fc_columns + ['Legend']]
-        data = data.sort_values(['seq_origin', 'GroupID', 'Position']).reset_index(drop=True)
+        # transform data
+        group_counts = data.group_by('GroupID').agg(pl.count('GroupID').alias('count'))
+        data = data.select(required_columns + fc_columns) \
+            .sort(['seq_origin', 'GroupID', 'Position']) \
+            .join(group_counts, on='GroupID', how='left') \
+            .with_columns(pl.lit('parent').alias('add_parent')) \
+            .with_columns(pl.when((pl.col('count') > 1) & (pl.col('Position') == '0Z')).then('add_parent').otherwise('seq_origin').alias('Legend')) \
+            .select(required_columns + fc_columns + ['Legend']) \
+            .with_row_index()
 
-        # change datatypes to categorical
-        data['GroupID'] = data['GroupID'].astype('category')
-        data['Position'] = data['Position'].astype('category')
-        data['seq_origin'] = data['seq_origin'].astype('category')
-        data['sequence'] = data['sequence'].astype('category')
-        data['Legend'] = data['Legend'].astype('category')
-        data['Legend'] = data['Legend'].cat.add_categories(['selection'])
-        for column in fc_columns + ['Input_CPM']:
-            data[column] = pd.to_numeric(data[column], downcast='float')
-
-        # serialize the DataFrame
-        serialized_data = base64.b64encode(pickle.dumps(data)).decode('utf-8')
-
-        return serialized_data, f'📄 {filename}', fc_columns, fc_columns[0], sorted(data.sequence.unique())
+        return f'📄 {filename}', fc_columns, fc_columns[0], sorted(data.collect()['sequence'].unique())
     
-    return {}, html.Label(f'Error reading {filename}', style=ERROR_STYLE), [], None, []
+    return html.Label(f'Error reading {filename}', style=ERROR_STYLE), [], None, []
 
 @callback(
     Output('manhattan-plot', 'figure'),
     Output('sequence-dropdown', 'value'),
     Output('manhattan-plot', 'clickData'),
     Output('selection-data', 'data'),
-    Input('stored-data', 'data'),
     Input('column-dropdown', 'value'),
     Input('scale-dropdown', 'value'),
     Input('sequence-dropdown', 'value'),
@@ -181,14 +163,16 @@ def upload_data(contents, filename):
     Input('page-dropdown', 'value'),
     prevent_initial_call=True
 )
-@cache.memoize(timeout=3600)
-def update_graph(serialized_data, y_columns, scale, selected, click_data, selected_data, erase, pages):
-    if not serialized_data or not y_columns:
+# @cache.memoize(timeout=3600)
+def update_graph(y_columns, scale, selected, click_data, selected_data, erase, pages):
+
+    global data
+    if data is None or not y_columns:
         return {}, None, None, []
+    plot_data = data.clone()
+    
     if type(y_columns) == str:
         y_columns = [y_columns]
-    
-    data = pickle.loads(base64.b64decode(serialized_data))
 
     if click_data is None:
         pass
@@ -216,58 +200,64 @@ def update_graph(serialized_data, y_columns, scale, selected, click_data, select
             else:
                 selected += [x for x in selections if not x in selected]
 
-    # bring parents to the front
-    parent_data = data[data['Legend'] == 'parent']
-    not_parent_data = data[data['Legend'] != 'parent']
-    data = pd.concat([not_parent_data, parent_data])
-
     # select sequences
     if selected is not None:
-        selected_idx = data[data['sequence'].isin(selected)].index
-        data.loc[selected_idx, 'Legend'] = 'selection'
+        # add selections to legend
+        plot_data = plot_data.with_columns(pl.lit('selection').alias('add_selection')) \
+            .with_columns(pl.when(pl.col('sequence').is_in(selected)).then('add_selection').otherwise('Legend').alias('Legend'))
 
         # selection data for export
-        selection_data = data[data['sequence'].isin(selected)].copy()
-        selection_columns = [x for x in selection_data.columns if '(log10)' not in x and '(sqrt)' not in x]
-        selection_data = selection_data[selection_columns]
-        selection_data = selection_data.drop('Legend', axis=1).to_dict('records')
-
-        # bring selected to the front
-        select_data = data[data['Legend'] == 'selection']
-        not_select_data = data[data['Legend'] != 'selection']
-        data = pd.concat([not_select_data, select_data])
+        selection_data = plot_data.filter(pl.col('Legend') == 'selection').collect().to_pandas().to_dict('records')
 
     else:
         selection_data = []
 
-    target_data_list = []
-    for column in y_columns:
-        target_data = data[['GroupID', 'Position', 'seq_origin', 'sequence', 'Input_CPM', 'Legend']]
+    # select scale
+    required_columns = ['GroupID', 'Position', 'seq_origin', 'sequence', 'Input_CPM']
+    if scale == 'Square Root':
+        plot_column = 'FC (sqrt)'
+        plot_data = pl.concat([
+            plot_data.with_columns(pl.col(y_column).sqrt().alias(plot_column)) \
+                .with_columns(pl.lit(y_column).alias('Target')) \
+                .select(['index'] + required_columns + [plot_column, 'Legend', 'Target'])
+        for y_column in y_columns])
 
-        # select scale
-        if scale == 'Square Root':
-            plot_column = 'FC (sqrt)'
-            target_data['Target'] = column
-            target_data[plot_column] = data[column].apply(np.sqrt)
+    elif scale == 'Log10':
+        plot_column = 'FC (log10)'
+        plot_data = pl.concat([
+            plot_data.with_columns(pl.col(y_column).log10().alias(plot_column)) \
+                .with_columns(pl.lit(y_column).alias('Target')) \
+                .select(['index'] + required_columns + [plot_column, 'Legend', 'Target']) \
+        for y_column in y_columns])
+    else:
+        plot_column = 'FC'
+        plot_data = pl.concat([
+            plot_data.with_columns(pl.col(y_column).alias(plot_column)) \
+                .with_columns(pl.lit(y_column).alias('Target')) \
+                .select(['index'] + required_columns + [plot_column, 'Legend', 'Target'])
+        for y_column in y_columns])
 
-        elif scale == 'Log10':
-            plot_column = 'FC (log10)'
-            target_data['Target'] = column
-            target_data[plot_column] = data[column].apply(np.log10)
-        else:
-            plot_column = 'FC'
-            target_data['Target'] = column
-            target_data[plot_column] = data[column]
+    # improve dtypes
+    dtypes = {
+        col: (pl.Categorical if col in ['Position', 'seq_origin', 'sequence', 'Legend', 'Target'] else
+            pl.Int32 if col in ['index', 'Input_CPM'] else
+            pl.Float32 if 'FC' in col else
+            pl.Utf8)
+        for col in plot_data.collect_schema().names()
+    }
 
-        target_data_list.append(target_data)
+    plot_data = plot_data.with_columns([pl.col(col).cast(dtypes[col]).alias(col)for col in plot_data.collect_schema().names()]) \
+        .with_columns((pl.col('Legend') == 'parent').cast(pl.Int8).alias('is_parent')) \
+        .with_columns((pl.col('Legend') == 'selection').cast(pl.Int8).alias('is_selection')) \
+        .sort(['is_selection', 'is_parent', 'Legend']) \
+        .select([col for col in plot_data.collect_schema().names()]) \
+        .collect()
 
     height = 100
     n_plots = len(y_columns)
     height += math.ceil(n_plots / pages) * 300
-    
-    data = pd.concat(target_data_list)
     hover_data = {'Legend': False, 'seq_origin': True, 'GroupID': True, 'Position': True, 'sequence': True, 'Input_CPM': True}
-    fig = px.scatter(data, y=plot_column, color='Legend', facet_col='Target', facet_col_wrap=pages, hover_name='Legend', hover_data=hover_data, height=height, render_mode='pointcloud')
+    fig = px.scatter(plot_data, x='index', y=plot_column, color='Legend', facet_col='Target', facet_col_wrap=pages, hover_name='Legend', hover_data=hover_data, height=height, render_mode='pointcloud')
 
     # color parents and selection
     for trace in fig.data:
