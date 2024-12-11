@@ -58,7 +58,7 @@ app.layout = html.Div([
     dcc.Store(id='data-store'),
 
     dcc.Loading(id='loading-upload', type='default', children=[
-        dcc.Upload(id='upload-data', children='Upload a CSV', style=UPLOAD_STYLE),
+        dcc.Upload(id='upload-data', children='Upload A CSV/XLSX', style=UPLOAD_STYLE),
     ], color='black', overlay_style=OVERLAY_STYLE_1),
 
     html.Div([
@@ -107,14 +107,17 @@ app.layout = html.Div([
 )
 def upload_data(contents, filename):
     if contents is None:
-        return [], 'Upload A CSV', [], None, []
+        return [], 'Upload A CSV/XLSX', [], None, []
     
     _, content_string = contents.split(',')
     decoded = base64.b64decode(content_string)
-    if filename.endswith('.csv'):
+    if filename.endswith('.csv') or filename.endswith('.xlsx'):
 
         print('loading data')
-        load_data = pl.read_csv(io.StringIO(decoded.decode('utf-8')), null_values=['#DIV/0!'])
+        if filename.endswith('.csv'):
+            load_data = pl.read_csv(io.StringIO(decoded.decode('utf-8')), null_values=['#DIV/0!'])
+        elif filename.endswith('.xlsx'):
+            load_data = pl.read_excel(io.BytesIO(decoded))
 
         # check for required columns
         required_columns = ['GroupID', 'Position', 'seq_origin', 'sequence', 'Input_CPM']
