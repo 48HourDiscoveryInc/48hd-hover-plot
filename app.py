@@ -260,7 +260,7 @@ def update_graph(store_data, y_columns, scale, selected, click_data, selected_da
     n_plots = len(y_columns)
     height += math.ceil(n_plots / pages) * 300
     hover_data = {'Legend': False, 'seq_origin': True, 'GroupID': True, 'Position': True, 'sequence': True, 'Input_CPM': True}
-    fig = px.scatter(plot_data, x='index', y=plot_column, color='Legend', facet_col='Target', facet_col_wrap=pages, hover_name='Legend', hover_data=hover_data, height=height, render_mode='pointcloud')
+    fig = px.scatter(plot_data, x='index', y=plot_column, color='Legend', facet_col='Target', facet_col_wrap=pages, hover_name='Legend', hover_data=hover_data, height=height)
 
     # color parents and selection
     for trace in fig.data:
