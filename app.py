@@ -258,7 +258,7 @@ def update_graph(store_data, y_columns, scale, selected, click_data, selected_da
 
     height = 100
     n_plots = len(y_columns)
-    height += math.ceil(n_plots / pages) * 300
+    height += math.ceil(n_plots / pages) * 350
     hover_data = {'Legend': False, 'seq_origin': True, 'GroupID': True, 'Position': True, 'sequence': True, 'Input_CPM': True}
     fig = px.scatter(plot_data, x='index', y=plot_column, color='Legend', facet_col='Target', facet_col_wrap=pages, hover_name='Legend', hover_data=hover_data, height=height)
 
@@ -273,6 +273,11 @@ def update_graph(store_data, y_columns, scale, selected, click_data, selected_da
             trace.marker.size = 7.5
         else:
             trace.marker.size = 4.5
+
+    fig.update_xaxes(showline=True, linewidth=1, linecolor='black', mirror=True)
+    fig.update_yaxes(showline=True, linewidth=1, linecolor='black', mirror=True)
+
+    fig.update_layout(template='plotly_white')
 
     return fig, selected, None, selection_data
 
