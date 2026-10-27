@@ -2,7 +2,6 @@ dash
 pandas
 polars
 pyarrow
-fastexcel
 plotly
 flask_caching
 dash_daq

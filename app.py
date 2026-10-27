@@ -1,12 +1,14 @@
 import io
 import os
+import re
 import math
 import uuid
+import html as html_lib
 import base64
 import logging
+import zipfile
 
 import polars as pl
-import fastexcel
 import plotly.express as px
 
 from dash import Dash
@@ -124,23 +126,120 @@ app.layout = html.Div([
 ])
 
 
+def is_fc(name):
+    return name.startswith('FC')
+
+
+def is_cpm(name):
+    return name.endswith('CPM') and name not in BASE_COLUMNS
+
+
 def is_wanted(name):
-    return name in BASE_COLUMNS or name == 'SDB' or 'FC' in name
+    # numeric columns: only FC* and *CPM are needed
+    return name in BASE_COLUMNS or name == 'SDB' or is_fc(name) or is_cpm(name)
+
+
+ROW_RE = re.compile(r'<row\b[^>]*?(?:/>|>(.*?)</row>)', re.S)
+CELL_RE = re.compile(r'<c r="([A-Z]+)\d+"([^>]*?)(?:/>|>(.*?)</c>)', re.S)
+VALUE_RE = re.compile(r'<v>(.*?)</v>', re.S)
+TEXT_RE = re.compile(r'<t\b[^>]*?(?:/>|>(.*?)</t>)', re.S)
+SI_RE = re.compile(r'<si>(.*?)</si>', re.S)
+
+
+def xml_text(text):
+    return html_lib.unescape(text) if '&' in text else text
+
+
+def first_sheet_path(archive):
+    workbook = archive.read('xl/workbook.xml').decode('utf-8')
+    rels = archive.read('xl/_rels/workbook.xml.rels').decode('utf-8')
+    sheet_id = re.search(r'<sheet\b[^>]*?r:id="([^"]+)"', workbook).group(1)
+    for rel in re.findall(r'<Relationship\b[^>]*>', rels):
+        if f'Id="{sheet_id}"' in rel:
+            target = re.search(r'Target="([^"]+)"', rel).group(1)
+            return target.lstrip('/') if target.startswith('/') else 'xl/' + target
+    return 'xl/worksheets/sheet1.xml'
+
+
+def cell_value(attrs, inner, shared_strings):
+    if inner is None:
+        return None
+    if 't="inlineStr"' in attrs:
+        return xml_text(''.join(t or '' for t in TEXT_RE.findall(inner)))
+    match = VALUE_RE.search(inner)
+    if match is None or 't="e"' in attrs:
+        return None
+    if 't="s"' in attrs:
+        return shared_strings[int(match.group(1))]
+    return xml_text(match.group(1))
+
+
+def iter_xlsx_rows(stream, chunk_size=4 * 2**20):
+    """Yield the inner XML of each <row> without holding the whole sheet in memory."""
+    buffer = ''
+    while True:
+        chunk = stream.read(chunk_size)
+        buffer += chunk
+        end = buffer.rfind('</row>') + len('</row>') if chunk else len(buffer)
+        yield from (row or '' for row in ROW_RE.findall(buffer, 0, end))
+        buffer = buffer[end:]
+        if not chunk:
+            break
+
+
+def read_xlsx(decoded):
+    """Stream the first sheet, keeping only the wanted columns; for GS files (with SDB)
+    Input_CPM == 0 rows are dropped while streaming.
+
+    calamine/openpyxl load every cell and need >1 GB for the full GS file (491 MB of
+    sheet XML), which gets the worker killed on a 512 MB Render instance.
+    """
+    with zipfile.ZipFile(io.BytesIO(decoded)) as archive:
+        shared_strings = []
+        if 'xl/sharedStrings.xml' in archive.namelist():
+            text = archive.read('xl/sharedStrings.xml').decode('utf-8')
+            shared_strings = [xml_text(''.join(t or '' for t in TEXT_RE.findall(si))) for si in SI_RE.findall(text)]
+            del text
+
+        with archive.open(first_sheet_path(archive)) as raw:
+            rows = iter_xlsx_rows(io.TextIOWrapper(raw, encoding='utf-8'))
+            header = {letter: cell_value(attrs, inner, shared_strings) for letter, attrs, inner in CELL_RE.findall(next(rows, ''))}
+            available_columns = [name for name in header.values() if name is not None]
+            letters = {letter: name for letter, name in header.items() if name is not None and is_wanted(name)}
+            if not all(column in available_columns for column in BASE_COLUMNS):
+                return pl.DataFrame(), available_columns
+
+            has_sdb = 'SDB' in available_columns
+            letter_of = {name: letter for letter, name in letters.items()}
+            cpm_letter, group_letter = letter_of['Input_CPM'], letter_of['GroupID']
+            # only match cells in the wanted columns, the GS file has ~60 unused count columns
+            wanted_re = re.compile(r'<c r="(' + '|'.join(letters) + r')\d+"([^>]*?)(?:/>|>(.*?)</c>)', re.S)
+
+            # group sizes are counted over all rows, before filtering, so scan parents stay marked
+            group_sizes = {}
+            columns = {name: [] for name in letters.values()}
+            for row in rows:
+                cells = {letter: (attrs, inner) for letter, attrs, inner in wanted_re.findall(row)}
+                group = cell_value(*cells.get(group_letter, ('', None)), shared_strings)
+                group_sizes[group] = group_sizes.get(group, 0) + 1
+                if has_sdb:
+                    cpm = cell_value(*cells.get(cpm_letter, ('', None)), shared_strings)
+                    if cpm is None or float(cpm) == 0:
+                        continue
+                for letter, name in letters.items():
+                    columns[name].append(cell_value(*cells.get(letter, ('', None)), shared_strings))
+
+    columns['count'] = [group_sizes[group] for group in columns['GroupID']]
+    return pl.DataFrame(columns, schema={name: pl.Utf8 if name != 'count' else pl.UInt32 for name in columns}), available_columns
 
 
 def load_dataframe(decoded, filename):
     """Read an uploaded GS (has SDB) or R3 (no SDB) file.
 
-    Returns (data, fc_columns, has_sdb) or raises ValueError with a user-facing message.
+    Returns (data, fc_columns, cpm_columns, has_sdb) or raises ValueError with a user-facing message.
     """
     if filename.endswith('.xlsx'):
-        # only parse the columns we need, the GS file has ~60 unused count columns
-        available_columns = []
-        def use_column(column):
-            available_columns.append(column.name)
-            return is_wanted(column.name)
-        sheet = fastexcel.read_excel(decoded).load_sheet(0, use_columns=use_column)
-        data = sheet.to_polars()
+        data, available_columns = read_xlsx(decoded)
     elif filename.endswith('.csv'):
         available_columns = pl.read_csv(io.BytesIO(decoded), n_rows=0).columns
         data = pl.read_csv(io.BytesIO(decoded), columns=[col for col in available_columns if is_wanted(col)], null_values=['#DIV/0!'])
@@ -153,20 +252,23 @@ def load_dataframe(decoded, filename):
             raise ValueError(f'{filename} does not have column: {column}')
 
     # check for FC columns
-    fc_columns = [col for col in available_columns if 'FC' in col]
+    fc_columns = [col for col in available_columns if is_fc(col)]
     if len(fc_columns) == 0:
         raise ValueError(f'{filename} does not have FC columns')
 
+    cpm_columns = [col for col in available_columns if is_cpm(col)]
     has_sdb = 'SDB' in available_columns
     key_columns = BASE_COLUMNS + (['SDB'] if has_sdb else [])
 
     # transform data, group sizes are counted before filtering so scan parents stay marked
-    data = data.select(key_columns + fc_columns) \
+    # (the xlsx reader already counted them and dropped the zero Input_CPM rows)
+    if 'count' not in data.columns:
+        data = data.with_columns(pl.len().over('GroupID').alias('count'))
+    data = data.select(key_columns + cpm_columns + fc_columns + ['count']) \
         .with_columns(
-            pl.col('GroupID').cast(pl.Int64),
-            pl.col('Input_CPM').cast(pl.Int32),
+            pl.col('GroupID').cast(pl.Float64).cast(pl.Int64),
+            pl.col(['Input_CPM'] + cpm_columns).cast(pl.Float64).cast(pl.Int32),
             pl.col(fc_columns).cast(pl.Float32),
-            pl.len().over('GroupID').alias('count'),
         )
 
     # GS only: drop sequences that were not seen in the input
@@ -175,10 +277,10 @@ def load_dataframe(decoded, filename):
 
     data = data.sort(['seq_origin', 'GroupID', 'Position']) \
         .with_columns(pl.when((pl.col('count') > 1) & (pl.col('Position') == '0Z')).then(pl.lit('parent')).otherwise(pl.col('seq_origin')).alias('Legend')) \
-        .select(key_columns + fc_columns + ['Legend']) \
+        .select(key_columns + cpm_columns + fc_columns + ['Legend']) \
         .with_row_index()
 
-    return data, fc_columns, has_sdb
+    return data, fc_columns, cpm_columns, has_sdb
 
 
 def upload_error(message):
@@ -205,7 +307,7 @@ def upload_data(contents, filename):
     logger.info('loading %s', filename)
     try:
         decoded = base64.b64decode(contents.split(',', 1)[1])
-        load_data, fc_columns, has_sdb = load_dataframe(decoded, filename)
+        load_data, fc_columns, cpm_columns, has_sdb = load_dataframe(decoded, filename)
     except ValueError as e:
         return upload_error(str(e))
     except Exception:
@@ -222,7 +324,7 @@ def upload_data(contents, filename):
     sdbs = load_data['SDB'].unique().sort().to_list() if has_sdb else []
     logger.info('loaded %s: %d rows', filename, load_data.height)
 
-    store_data = {'key': key, 'has_sdb': has_sdb, 'fc_columns': fc_columns}
+    store_data = {'key': key, 'has_sdb': has_sdb, 'fc_columns': fc_columns, 'cpm_columns': cpm_columns}
     return store_data, f'📄 {filename}', fc_columns, fc_columns[0], sequences, sdbs, sdbs, SDB_SHOW_STYLE if has_sdb else SDB_HIDE_STYLE
 
 
@@ -291,7 +393,7 @@ def update_graph(store_data, y_columns, scale, selected, click_data, selected_da
 
         # selection data for export
         selection_data = plot_data.filter(pl.col('Legend') == 'selection') \
-            .select(key_columns + store_data['fc_columns']) \
+            .select(key_columns + store_data['cpm_columns'] + store_data['fc_columns']) \
             .to_dicts()
     else:
         selection_data = []
