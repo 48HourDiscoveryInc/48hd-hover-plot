@@ -1,10 +1,8 @@
 dash
-numpy
 pandas
 polars
 pyarrow
 fastexcel
-scikit_learn
 plotly
 flask_caching
 dash_daq

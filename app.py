@@ -1,8 +1,12 @@
-import math
-import polars as pl
-
 import io
+import os
+import math
+import uuid
 import base64
+import logging
+
+import polars as pl
+import fastexcel
 import plotly.express as px
 
 from dash import Dash
@@ -12,9 +16,24 @@ from dash import callback
 from dash import Input, Output, State
 
 import dash_daq as daq
+from flask_caching import Cache
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Dash(__name__)
 server = app.server
+
+# processed data lives server-side (shared by all gunicorn workers on the instance),
+# the browser only keeps a key to it
+cache = Cache(server, config={
+    'CACHE_TYPE': 'FileSystemCache',
+    'CACHE_DIR': os.environ.get('CACHE_DIR', 'cache'),
+    'CACHE_DEFAULT_TIMEOUT': 6 * 60 * 60,
+    'CACHE_THRESHOLD': 50,
+})
+
+BASE_COLUMNS = ['GroupID', 'Position', 'seq_origin', 'sequence', 'Input_CPM']
 
 FONT_STYLE = {'fontFamily': 'monospace'}
 UPLOAD_STYLE = {
@@ -51,6 +70,8 @@ ERROR_STYLE = {
     'color': 'red',
     **FONT_STYLE
 }
+SDB_SHOW_STYLE = {'margin': '10px', 'width': '200px'}
+SDB_HIDE_STYLE = {'display': 'none'}
 
 app.layout = html.Div([
 
@@ -73,6 +94,11 @@ app.layout = html.Div([
         ], style={'margin': '10px', 'width': '150px'}),
 
         html.Div([
+            html.Label('SDB', style=LABEL_STYLE),
+            dcc.Dropdown(id='sdb-dropdown', multi=True, style=DROPDOWN_STYLE),
+        ], id='sdb-container', style=SDB_HIDE_STYLE),
+
+        html.Div([
             html.Label('Select sequences', style=LABEL_STYLE),
             dcc.Dropdown(id='sequence-dropdown', style=DROPDOWN_STYLE, multi=True, persistence=True, persistence_type='local'),
         ], style={'flex': '1', 'margin': '10px'}),
@@ -88,6 +114,8 @@ app.layout = html.Div([
         ], style={'margin': '10px', 'width': '100px'}),
     ], style={'display': 'flex', 'flexDirection': 'row', 'gap': '10px'}),
 
+    html.Div(id='plot-message'),
+
     dcc.Loading(id='loading-manhattan', type='default', children=[
         dcc.Graph(id='manhattan-plot'),
     ], color='black', overlay_style=OVERLAY_STYLE_2),
@@ -95,66 +123,115 @@ app.layout = html.Div([
     dash_table.DataTable(id='selection-data', page_action='none', export_format='xlsx', style_table=TABLE_STYLE)
 ])
 
+
+def is_wanted(name):
+    return name in BASE_COLUMNS or name == 'SDB' or 'FC' in name
+
+
+def load_dataframe(decoded, filename):
+    """Read an uploaded GS (has SDB) or R3 (no SDB) file.
+
+    Returns (data, fc_columns, has_sdb) or raises ValueError with a user-facing message.
+    """
+    if filename.endswith('.xlsx'):
+        # only parse the columns we need, the GS file has ~60 unused count columns
+        available_columns = []
+        def use_column(column):
+            available_columns.append(column.name)
+            return is_wanted(column.name)
+        sheet = fastexcel.read_excel(decoded).load_sheet(0, use_columns=use_column)
+        data = sheet.to_polars()
+    elif filename.endswith('.csv'):
+        available_columns = pl.read_csv(io.BytesIO(decoded), n_rows=0).columns
+        data = pl.read_csv(io.BytesIO(decoded), columns=[col for col in available_columns if is_wanted(col)], null_values=['#DIV/0!'])
+    else:
+        raise ValueError(f'Error reading {filename}')
+
+    # check for required columns
+    for column in BASE_COLUMNS:
+        if column not in available_columns:
+            raise ValueError(f'{filename} does not have column: {column}')
+
+    # check for FC columns
+    fc_columns = [col for col in available_columns if 'FC' in col]
+    if len(fc_columns) == 0:
+        raise ValueError(f'{filename} does not have FC columns')
+
+    has_sdb = 'SDB' in available_columns
+    key_columns = BASE_COLUMNS + (['SDB'] if has_sdb else [])
+
+    # transform data, group sizes are counted before filtering so scan parents stay marked
+    data = data.select(key_columns + fc_columns) \
+        .with_columns(
+            pl.col('GroupID').cast(pl.Int64),
+            pl.col('Input_CPM').cast(pl.Int32),
+            pl.col(fc_columns).cast(pl.Float32),
+            pl.len().over('GroupID').alias('count'),
+        )
+
+    # GS only: drop sequences that were not seen in the input
+    if has_sdb:
+        data = data.filter(pl.col('Input_CPM') != 0)
+
+    data = data.sort(['seq_origin', 'GroupID', 'Position']) \
+        .with_columns(pl.when((pl.col('count') > 1) & (pl.col('Position') == '0Z')).then(pl.lit('parent')).otherwise(pl.col('seq_origin')).alias('Legend')) \
+        .select(key_columns + fc_columns + ['Legend']) \
+        .with_row_index()
+
+    return data, fc_columns, has_sdb
+
+
+def upload_error(message):
+    return None, html.Label(message, style=ERROR_STYLE), [], None, [], [], None, SDB_HIDE_STYLE
+
+
 @callback(
     Output('data-store', 'data'),
     Output('upload-data', 'children'),
     Output('column-dropdown', 'options'),
     Output('column-dropdown', 'value'),
     Output('sequence-dropdown', 'options'),
+    Output('sdb-dropdown', 'options'),
+    Output('sdb-dropdown', 'value'),
+    Output('sdb-container', 'style'),
     Input('upload-data', 'contents'),
     State('upload-data', 'filename'),
     prevent_initial_call=True
 )
 def upload_data(contents, filename):
     if contents is None:
-        return [], 'Upload A CSV/XLSX', [], None, []
-    
-    _, content_string = contents.split(',')
-    decoded = base64.b64decode(content_string)
-    if filename.endswith('.csv') or filename.endswith('.xlsx'):
+        return None, 'Upload A CSV/XLSX', [], None, [], [], None, SDB_HIDE_STYLE
 
-        print('loading data')
-        if filename.endswith('.csv'):
-            load_data = pl.read_csv(io.StringIO(decoded.decode('utf-8')), null_values=['#DIV/0!'])
-        elif filename.endswith('.xlsx'):
-            load_data = pl.read_excel(io.BytesIO(decoded))
+    logger.info('loading %s', filename)
+    try:
+        decoded = base64.b64decode(contents.split(',', 1)[1])
+        load_data, fc_columns, has_sdb = load_dataframe(decoded, filename)
+    except ValueError as e:
+        return upload_error(str(e))
+    except Exception:
+        logger.exception('failed to read %s', filename)
+        return upload_error(f'Error reading {filename}')
+    del decoded
 
-        # check for required columns
-        required_columns = ['GroupID', 'Position', 'seq_origin', 'sequence', 'Input_CPM']
-        available_columns = load_data.collect_schema()
-        for column in required_columns:
-            if not column in available_columns:
-                return [], html.Label(f'{filename} does not have column: {column}', style=ERROR_STYLE), [], None, []
-            
-        # check for FC columns
-        fc_columns = [col for col in available_columns if 'FC' in col]
-        if len(fc_columns) == 0:
-            return [], html.Label(f'{filename} does not have FC columns', style=ERROR_STYLE), [], None, []
+    buffer = io.BytesIO()
+    load_data.write_parquet(buffer)
+    key = uuid.uuid4().hex
+    cache.set(key, buffer.getvalue())
 
-        # transform data
-        group_counts = load_data.group_by('GroupID').agg(pl.count('GroupID').alias('count'))
+    sequences = load_data['sequence'].unique().sort().to_list()
+    sdbs = load_data['SDB'].unique().sort().to_list() if has_sdb else []
+    logger.info('loaded %s: %d rows', filename, load_data.height)
 
-        load_data = load_data.select(required_columns + fc_columns) \
-            .sort(['seq_origin', 'GroupID', 'Position']) \
-            .join(group_counts, on='GroupID', how='left') \
-            .with_columns(pl.lit('parent').alias('add_parent')) \
-            .with_columns(pl.when((pl.col('count') > 1) & (pl.col('Position') == '0Z')).then('add_parent').otherwise('seq_origin').alias('Legend')) \
-            .select(required_columns + fc_columns + ['Legend']) \
-            .with_row_index()
+    store_data = {'key': key, 'has_sdb': has_sdb, 'fc_columns': fc_columns}
+    return store_data, f'📄 {filename}', fc_columns, fc_columns[0], sequences, sdbs, sdbs, SDB_SHOW_STYLE if has_sdb else SDB_HIDE_STYLE
 
-        sequences = sorted(load_data['sequence'].unique())
-        store_data = load_data.to_pandas().to_dict('records')
-        print('loaded data')
-
-        return store_data, f'📄 {filename}', fc_columns, fc_columns[0], sequences
-    
-    return [], html.Label(f'Error reading {filename}', style=ERROR_STYLE), [], None, []
 
 @callback(
     Output('manhattan-plot', 'figure'),
     Output('sequence-dropdown', 'value'),
     Output('manhattan-plot', 'clickData'),
     Output('selection-data', 'data'),
+    Output('plot-message', 'children'),
     State('data-store', 'data'),
     Input('column-dropdown', 'value'),
     Input('scale-dropdown', 'value'),
@@ -163,23 +240,30 @@ def upload_data(contents, filename):
     Input('manhattan-plot', 'selectedData'),
     Input('boolean-switch', 'on'),
     Input('page-dropdown', 'value'),
+    Input('sdb-dropdown', 'value'),
     prevent_initial_call=True
 )
-def update_graph(store_data, y_columns, scale, selected, click_data, selected_data, erase, pages):
+def update_graph(store_data, y_columns, scale, selected, click_data, selected_data, erase, pages, sdbs):
 
     if not store_data or not y_columns:
-        print('no data')
-        return {}, None, None, []
+        return {}, None, None, [], None
 
-    plot_data = pl.from_records(store_data)
-    
+    cached = cache.get(store_data['key'])
+    if cached is None:
+        return {}, selected, None, [], html.Label('Data expired, please upload the file again', style=ERROR_STYLE)
+
+    plot_data = pl.read_parquet(io.BytesIO(cached))
+    key_columns = BASE_COLUMNS + (['SDB'] if store_data['has_sdb'] else [])
+
+    if store_data['has_sdb'] and sdbs:
+        plot_data = plot_data.filter(pl.col('SDB').is_in(sdbs))
+
     if type(y_columns) == str:
         y_columns = [y_columns]
 
-    if click_data is None:
-        pass
-    else:
-        selection = click_data['points'][0]['customdata'][4]
+    # customdata[0] is the sequence (see custom_data in px.scatter)
+    if click_data is not None:
+        selection = click_data['points'][0]['customdata'][0]
         if erase:
             if selected is not None:
                 selected = [x for x in selected if x != selection]
@@ -189,10 +273,8 @@ def update_graph(store_data, y_columns, scale, selected, click_data, selected_da
             elif not selection in selected:
                 selected += [selection]
 
-    if selected_data is None:
-        pass
-    else:
-        selections = [point['customdata'][4] for point in selected_data['points']]
+    if selected_data is not None:
+        selections = [point['customdata'][0] for point in selected_data['points']]
         if erase:
             if selected is not None:
                 selected = [x for x in selected if not x in selections]
@@ -203,64 +285,49 @@ def update_graph(store_data, y_columns, scale, selected, click_data, selected_da
                 selected += [x for x in selections if not x in selected]
 
     # select sequences
-    required_columns = ['GroupID', 'Position', 'seq_origin', 'sequence', 'Input_CPM']
-    if selected is not None:
+    if selected:
         # add selections to legend
-        plot_data = plot_data.with_columns(pl.lit('selection').alias('add_selection')) \
-            .with_columns(pl.when(pl.col('sequence').is_in(selected)).then('add_selection').otherwise('Legend').alias('Legend'))
+        plot_data = plot_data.with_columns(pl.when(pl.col('sequence').is_in(selected)).then(pl.lit('selection')).otherwise(pl.col('Legend')).alias('Legend'))
 
         # selection data for export
         selection_data = plot_data.filter(pl.col('Legend') == 'selection') \
-            .select(required_columns + [col for col in plot_data.collect_schema() if 'FC' in col]) \
-            .to_pandas().to_dict('records')
-
+            .select(key_columns + store_data['fc_columns']) \
+            .to_dicts()
     else:
         selection_data = []
 
     # select scale
     if scale == 'Square Root':
         plot_column = 'FC (sqrt)'
-        plot_data = pl.concat([
-            plot_data.with_columns(pl.col(y_column).sqrt().alias(plot_column)) \
-                .with_columns(pl.lit(y_column).alias('Target')) \
-                .select(['index'] + required_columns + [plot_column, 'Legend', 'Target'])
-        for y_column in y_columns])
-
+        y_expr = pl.col(plot_column).sqrt()
     elif scale == 'Log10':
         plot_column = 'FC (log10)'
-        plot_data = pl.concat([
-            plot_data.with_columns(pl.col(y_column).log10().alias(plot_column)) \
-                .with_columns(pl.lit(y_column).alias('Target')) \
-                .select(['index'] + required_columns + [plot_column, 'Legend', 'Target']) \
-        for y_column in y_columns])
+        y_expr = pl.col(plot_column).log10()
     else:
         plot_column = 'FC'
-        plot_data = pl.concat([
-            plot_data.with_columns(pl.col(y_column).alias(plot_column)) \
-                .with_columns(pl.lit(y_column).alias('Target')) \
-                .select(['index'] + required_columns + [plot_column, 'Legend', 'Target'])
-        for y_column in y_columns])
+        y_expr = pl.col(plot_column)
 
-    # improve dtypes
-    dtypes = {
-        col: (pl.Categorical if col in ['Position', 'seq_origin', 'sequence', 'Legend', 'Target'] else
-            pl.Int32 if col in ['index', 'Input_CPM'] else
-            pl.Float32 if 'FC' in col else
-            pl.Utf8)
-        for col in plot_data.collect_schema().names()
-    }
-
-    plot_data = plot_data.with_columns([pl.col(col).cast(dtypes[col]).alias(col)for col in plot_data.collect_schema().names()]) \
-        .with_columns((pl.col('Legend') == 'parent').cast(pl.Int8).alias('is_parent')) \
-        .with_columns((pl.col('Legend') == 'selection').cast(pl.Int8).alias('is_selection')) \
+    plot_data = plot_data.unpivot(on=y_columns, index=['index'] + key_columns + ['Legend'], variable_name='Target', value_name=plot_column) \
+        .with_columns(y_expr) \
+        .filter(pl.col(plot_column).is_finite()) \
+        .with_columns(
+            pl.col(['Position', 'seq_origin', 'Legend', 'Target'] + (['SDB'] if store_data['has_sdb'] else [])).cast(pl.Categorical),
+            pl.col('index').cast(pl.Int32),
+            (pl.col('Legend') == 'parent').cast(pl.Int8).alias('is_parent'),
+            (pl.col('Legend') == 'selection').cast(pl.Int8).alias('is_selection'),
+        ) \
         .sort(['is_selection', 'is_parent', 'Legend']) \
-        .select([col for col in plot_data.collect_schema().names()])
+        .drop(['is_selection', 'is_parent'])
 
     height = 100
     n_plots = len(y_columns)
     height += math.ceil(n_plots / pages) * 350
-    hover_data = {'Legend': False, 'seq_origin': True, 'GroupID': True, 'Position': True, 'sequence': True, 'Input_CPM': True}
-    fig = px.scatter(plot_data, x='index', y=plot_column, color='Legend', facet_col='Target', facet_col_wrap=pages, hover_name='Legend', hover_data=hover_data, height=height)
+    hover_data = {'Legend': False, 'sequence': True, 'seq_origin': True, 'GroupID': True, 'Position': True}
+    if store_data['has_sdb']:
+        hover_data['SDB'] = True
+    hover_data['Input_CPM'] = True
+    fig = px.scatter(plot_data, x='index', y=plot_column, color='Legend', facet_col='Target', facet_col_wrap=pages,
+                     hover_name='Legend', hover_data=hover_data, custom_data=['sequence'], height=height, render_mode='webgl')
 
     # color parents and selection
     for trace in fig.data:
@@ -279,7 +346,7 @@ def update_graph(store_data, y_columns, scale, selected, click_data, selected_da
 
     fig.update_layout(template='plotly_white')
 
-    return fig, selected, None, selection_data
+    return fig, selected, None, selection_data, None
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=os.environ.get('DASH_DEBUG') == '1')
